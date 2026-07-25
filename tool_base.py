@@ -152,6 +152,7 @@ def run_with_tools(
     keep_alive,
     show_thinking,
     no_safety_system_prompt,
+    system_prompt = None,
     verbose=0,
     safe=False,
     thought_file_handle=None,
@@ -165,8 +166,18 @@ def run_with_tools(
     final_response = ""
 
     has_system = any(m.get("role") == "system" for m in messages)
-    if not has_system and not no_safety_system_prompt:
-        messages.insert(0, {"role": "system", "content": SAFETY_SYSTEM_PROMPT})
+    if not has_system:
+
+        sp = ""
+
+        if system_prompt is not None:
+           sp += system_prompt
+           sp += "\n"
+
+        if not no_safety_system_prompt:
+           sp += SAFETY_SYSTEM_PROMPT
+
+        messages.insert(0, {"role": "system", "content": sp})
 
     if ollama_websearch:
         web_tool = OllamaTool(

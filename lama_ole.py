@@ -40,7 +40,7 @@ def main():
     parser.add_argument(
         "-V", "--version",
         action="version",
-        version="0.0.13"
+        version="0.0.14"
     )
     # Define arguments
     parser.add_argument(
@@ -240,11 +240,25 @@ def main():
         help="Behavior when max_tool_rounds is reached: 'ask' (interactive menu) or 'fallback' (silent default)"
     )
 
+    # Parameter: system_prompt
+    parser.add_argument(
+        "--system_prompt",
+        type=str,
+        help="The system prompt"
+    )
+
+    # Parameter: system_prompt_file
+    parser.add_argument(
+        "--system_prompt_file",
+        type=str,
+        help="The system prompt read from a file"
+    )
+
     # Parameter: no_safety_system_prompt
     parser.add_argument(
         "--no_safety_system_prompt",
         action="store_true",
-        help="Enables potential takeover when tools are used"
+        help="Enables potential takeover when tools are used, it is placed after the system prompt, if given"
     )
 
     args = parser.parse_args()
@@ -370,6 +384,18 @@ def main():
         print("Error: You must provide content via -i, --inputfile, --stdin or use --chat", file=sys.stderr)
         sys.exit(1)
 
+    system_prompt = None
+    if args.system_prompt :
+        system_prompt = args.system_prompt
+    elif args.system_prompt_file :
+        if os.path.exists(args.system_prompt_file):
+            with open(args.system_prompt_file, 'r', encoding='utf-8') as f:
+                system_prompt = f.read()
+        else:
+            print(f"Error: The file '{args.system_prompt_file}' was not found.", file=sys.stderr)
+            sys.exit(1)
+        
+
     # File handles
     thought_file_handle = None
     output_file_handle = None
@@ -409,6 +435,7 @@ def main():
                 keep_alive=args.keep_alive,
                 show_thinking=args.thinking,
                 no_safety_system_prompt=args.no_safety_system_prompt,
+                system_prompt= system_prompt,
                 verbose=args.verbose,
                 safe=args.safe,
                 thought_file_handle=thought_file_handle,
@@ -429,6 +456,7 @@ def main():
                     keep_alive=args.keep_alive,
                     show_thinking=args.thinking,
                     no_safety_system_prompt= args.no_safety_system_prompt,
+                    system_prompt= system_prompt,
                     verbose=args.verbose,
                     safe=args.safe,
                     thought_file_handle=thought_file_handle,
@@ -450,6 +478,7 @@ def main():
                 keep_alive=args.keep_alive,
                 show_thinking=args.thinking,
                 no_safety_system_prompt= args.no_safety_system_prompt,
+                system_prompt= system_prompt,
                 verbose=args.verbose,
                 safe=args.safe,
                 thought_file_handle=thought_file_handle,
