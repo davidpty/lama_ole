@@ -17,7 +17,19 @@ def _validate_path(path: str) -> Optional[str]:
 
 @tool(description="""Apply a patch to a specific file using the character-based diff_match_patch format.
 
-STRICT FORMAT RULES for patch_string: MUST start directly with '@@' (Do NOT include '---' or '+++' filename header lines)."""
+STRICT FORMAT RULES for patch_string: MUST start directly with '@@' (Do NOT include '---' or '+++' filename header lines).
+
+CRITICAL EXAMPLE:
+Correct patch_string format:
+\"\"\"
+@@ -1,11 +1,21 @@
+ Hello%20
+ +Brave%20New%20
+  World
+\"\"\"
+
+"""
+
 )
 
 def apply_patch(path: str, patch_string: str) -> str:
