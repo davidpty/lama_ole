@@ -25,7 +25,6 @@ def edit_help():
     
 
 @tool(description="""Replaces the 'search' string with the 'replace' string in the file at 'path'. The 'search' string must match exactly once in the file to ensure it is unambiguous.""")
-
 def edit( path: str, search: str, replace: str) -> str:
     # 1. Safety Check
 
@@ -54,4 +53,38 @@ def edit( path: str, search: str, replace: str) -> str:
 
     except Exception as e:
         return {"status": "error", "message": ["Error applying patch:", str(e)]}
+
+@tool(description="Creates a new file with the specified content at the given path. Fails if the file already exists.")
+def create_new_file(path: str, content: str):
+    # 1. Safety Check
+    if os.path.exists(path):
+        return {"status": "error", "message": [f"File {path} already exists."]}
+
+    safety_error = _validate_path(path)
+    if safety_error:
+        return {"status": "error", "message": [safety_error]}
+
+    try:
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(content)
+        return {"status": "success", "data": f"Successfully created file {path}."}
+    except Exception as e:
+        return {"status": "error", "message": [f"Error creating file: {str(e)}"]}
+
+@tool(description="Appends the specified content to the end of the file at the given path.")
+def append_to_file(path: str, content: str):
+    # 1. Safety Check
+    if not os.path.exists(path):
+        return {"status": "error", "message": [f"File {path} does not exist."]}
+
+    safety_error = _validate_path(path)
+    if safety_error:
+        return {"status": "error", "message": [safety_error]}
+
+    try:
+        with open(path, "a", encoding="utf-8") as f:
+            f.write(content)
+        return {"status": "success", "data": f"Successfully appended to {path}."}
+    except Exception as e:
+        return {"status": "error", "message": [f"Error appending to file: {str(e)}"]}
 
