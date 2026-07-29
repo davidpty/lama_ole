@@ -78,6 +78,23 @@ def grep(pattern: str, path: str = ".", include: str = "*") -> str:
                 pass
     return "\n".join(matches) if matches else "(no matches)"
 
+@tool(description="Search for a fixed string pattern in files under a directory")
+def grepF(pattern: str, path: str = ".", include: str = "*") -> str:
+    matches = []
+    for root, _dirs, files in os.walk(path):
+        for fname in files:
+            if not glob_mod.fnmatch.fnmatch(fname, include):
+                continue
+            fpath = os.path.join(root, fname)
+            try:
+                with open(fpath, "r", encoding="utf-8", errors="replace") as f:
+                    for i, line in enumerate(f, 1):
+                        if re.search( re.escape( pattern), line):
+                            matches.append(f"{fpath}:{i}: {line.rstrip()}")
+            except Exception:
+                pass
+    return "\n".join(matches) if matches else "(no matches)"
+
 
 @tool(description="Find files matching a glob pattern")
 def glob_pattern(pattern: str) -> str:
@@ -110,68 +127,68 @@ def syntax_check(path: str) -> str:
         return f"{path}: {e}"
 
 
-@tool(description="Show git status for a repository")
-def git_status(path: str = ".") -> str:
-    return _git_cmd("status", path)
-
-
-@tool(description="Show unstaged git diff for a repository")
-def git_diff(path: str = ".") -> str:
-    return _git_cmd("diff", path)
-
-
-@tool(description="Show recent git log entries")
-def git_log(n: int = 10, path: str = ".") -> str:
-    return _git_cmd(f"log --oneline -{n}", path)
-
-
-def _git_cmd(args: str, path: str) -> str:
-    try:
-        result = subprocess.run(
-            f"git {args}",
-            shell=True,
-            capture_output=True,
-            text=True,
-            timeout=15,
-            cwd=path,
-        )
-        output = ""
-        if result.stdout:
-            output += result.stdout
-        if result.stderr:
-            if output:
-                output += "\n--- stderr ---\n"
-            output += result.stderr
-        if result.returncode != 0:
-            output += f"\n(exit code: {result.returncode})"
-        return output if output else "(no output)"
-    except Exception as e:
-        return f"Error: {e}"
-
-
-@tool(description="locate -l 10 -bi ...")
-def locate_bi(n: int = 10, searchstring: str = "") -> str:
-    return _locate_cmd(f" -l {n} -bi {searchstring}", path = ".")
-
-def _locate_cmd(args: str, path: str) -> str:
-    try:
-        result = subprocess.run(
-            f"locate {args}",
-            shell=True,
-            capture_output=True,
-            text=True,
-            timeout=15,
-            cwd=path,
-        )
-        output = ""
-        if result.stdout:
-            output += result.stdout
-        if result.stderr:
-            if output:
-                output += "\n--- stderr ---\n"
-            output += result.stderr
-        if result.returncode != 0:
-            output += f"\n(exit code: {result.returncode})"
-        return output if output else "(no output)"
-    except Exception as e:
-        return f"Error: {e}"
+# @tool(description="Show git status for a repository")
+# def git_status(path: str = ".") -> str:
+#     return _git_cmd("status", path)
+# 
+# 
+# @tool(description="Show unstaged git diff for a repository")
+# def git_diff(path: str = ".") -> str:
+#     return _git_cmd("diff", path)
+# 
+# 
+# @tool(description="Show recent git log entries")
+# def git_log(n: int = 10, path: str = ".") -> str:
+#     return _git_cmd(f"log --oneline -{n}", path)
+# 
+# 
+# def _git_cmd(args: str, path: str) -> str:
+#     try:
+#         result = subprocess.run(
+#             f"git {args}",
+#             shell=True,
+#             capture_output=True,
+#             text=True,
+#             timeout=15,
+#             cwd=path,
+#         )
+#         output = ""
+#         if result.stdout:
+#             output += result.stdout
+#         if result.stderr:
+#             if output:
+#                 output += "\n--- stderr ---\n"
+#             output += result.stderr
+#         if result.returncode != 0:
+#             output += f"\n(exit code: {result.returncode})"
+#         return output if output else "(no output)"
+#     except Exception as e:
+#         return f"Error: {e}"
+# 
+# 
+# @tool(description="locate -l 10 -bi ...")
+# def locate_bi(n: int = 10, searchstring: str = "") -> str:
+#     return _locate_cmd(f" -l {n} -bi {searchstring}", path = ".")
+# 
+# def _locate_cmd(args: str, path: str) -> str:
+#     try:
+#         result = subprocess.run(
+#             f"locate {args}",
+#             shell=True,
+#             capture_output=True,
+#             text=True,
+#             timeout=15,
+#             cwd=path,
+#         )
+#         output = ""
+#         if result.stdout:
+#             output += result.stdout
+#         if result.stderr:
+#             if output:
+#                 output += "\n--- stderr ---\n"
+#             output += result.stderr
+#         if result.returncode != 0:
+#             output += f"\n(exit code: {result.returncode})"
+#         return output if output else "(no output)"
+#     except Exception as e:
+#         return f"Error: {e}"
