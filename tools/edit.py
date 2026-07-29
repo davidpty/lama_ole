@@ -30,11 +30,11 @@ def edit( path: str, search: str, replace: str) -> str:
     # 1. Safety Check
 
     if not os.path.exists(path):
-        return f"Error: File {path} does not exist."
+        return {"status": "error", "message": ["File", path, "does not exist."]}
 
     safety_error = _validate_path(path)
     if safety_error:
-        return safety_error
+        return {"status": "error", "message": [safety_error]}
 
     # 2. Read original content
     with open(path, "r", encoding="utf-8") as f:
@@ -43,15 +43,15 @@ def edit( path: str, search: str, replace: str) -> str:
     match_count = original_text.count( search)
 
     if match_count != 1:
-        return f"Error: search string matches not exactly 1 time : {match_count}."
+        return {"status": "error", "message": ["Error: search string matches not exactly 1 time :", match_count]}
 
     edited_text = original_text.replace( search, replace)
 
     try:
         with open(path, "w", encoding="utf-8") as f:
             f.write( edited_text)
-        return f"Successfully applied patch to {path}."
+        return {"status": "success", "data": f"Successfully applied patch to {path}."}
 
     except Exception as e:
-        return f"Error applying patch: {str(e)}"
+        return {"status": "error", "message": ["Error applying patch:", str(e)]}
 
