@@ -37,20 +37,23 @@ def run_chat(state: ChatState):
             print()
             break
         except KeyboardInterrupt:
-            print()
-            break
+            print("\nInterrupted.")
+            continue
 
         stripped = line.strip()
         if not stripped:
             continue
 
-        if stripped.startswith("/"):
-            if _handle_command(stripped, state):
-                break
-            continue
+        # Track messages before this turn to allow rollback on error/interrupt
+        messages_before = len(state.messages)
 
-        state.messages.append({"role": "user", "content": stripped})
         try:
+            if stripped.startswith("/"):
+                if _handle_command(stripped, state):
+                    break
+                continue
+
+            state.messages.append({"role": "user", "content": stripped})
             run_with_tools(
                 client=state.client,
                 model=state.model,
@@ -70,9 +73,16 @@ def run_chat(state: ChatState):
                 max_tool_rounds_continuation=state.max_tool_rounds_continuation,
                 ollama_websearch=state.ollama_websearch,
             )
+        except KeyboardInterrupt:
+            print("\nInterrupted.")
+            # Rollback messages added during this turn (user message or assistant/tool messages)
+            while len(state.messages) > messages_before:
+                state.messages.pop()
         except Exception as e:
             print(f"Error: {e}", file=sys.stderr)
-            state.messages.pop()
+            # Rollback messages added during this turn
+            while len(state.messages) > messages_before:
+                state.messages.pop()
 
 
 def _handle_command(line: str, state: ChatState) -> bool:
