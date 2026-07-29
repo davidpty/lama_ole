@@ -85,21 +85,52 @@ def list_dir(path: str = ".") -> str:
     return "\n".join(lines) if lines else "(empty directory)"
 
 
-@tool(description="Search for a regex pattern in files under a directory")
+@tool(description="Search for a regex pattern in files under a path")
 def grep(pattern: str, path: str = ".", include: str = "*") -> str:
     matches = []
-    for root, _dirs, files in os.walk(path):
-        for fname in files:
-            if not glob_mod.fnmatch.fnmatch(fname, include):
-                continue
-            fpath = os.path.join(root, fname)
-            try:
-                with open(fpath, "r", encoding="utf-8", errors="replace") as f:
-                    for i, line in enumerate(f, 1):
-                        if re.search(pattern, line):
-                            matches.append(f"{fpath}:{i}: {line.rstrip()}")
-            except Exception:
-                pass
+    if os.path.isfile(path):
+        files_to_search = [path]
+    elif os.path.isdir(path):
+        files_to_search = []
+        for root, _, files in os.walk(path):
+            for fname in files:
+                if glob_mod.fnmatch.fnmatch(fname, include):
+                    files_to_search.append(os.path.join(root, fname))
+    else:
+        return "(no matches or path not found)"
+
+    for fpath in files_to_search:
+        try:
+            with open(fpath, "r", encoding="utf-8", errors="replace") as f:
+                for i, line in enumerate(f, 1):
+                    if re.search(pattern, line):
+                        matches.append(f"{fpath}:{i}: {line.rstrip()}")
+        except Exception:
+            pass
+    return "\n".join(matches) if matches else "(no matches)"
+
+@tool(description="Search for a fixed string pattern in files under a path")
+def grepF(pattern: str, path: str = ".", include: str = "*") -> str:
+    matches = []
+    if os.path.isfile(path):
+        files_to_search = [path]
+    elif os.path.isdir(path):
+        files_to_search = []
+        for root, _dirs, files in os.walk(path):
+            for fname in files:
+                if glob_mod.fnmatch.fnmatch(fname, include):
+                    files_to_search.append(os.path.join(root, fname))
+    else:
+        return "(no matches or path not found)"
+
+    for fpath in files_to_search:
+        try:
+            with open(fpath, "r", encoding="utf-8", errors="replace") as f:
+                for i, line in enumerate(f, 1):
+                    if re.search(re.escape(pattern), line):
+                        matches.append(f"{fpath}:{i}: {line.rstrip()}")
+        except Exception:
+            pass
     return "\n".join(matches) if matches else "(no matches)"
 
 
