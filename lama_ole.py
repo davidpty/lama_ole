@@ -1,4 +1,4 @@
-#!/usr/bin/python3
+#!/usr/bin/env python3
 
 import argparse
 import json
@@ -40,7 +40,7 @@ def main():
     parser.add_argument(
         "-V", "--version",
         action="version",
-        version="0.0.21"
+        version="0.0.22"
     )
     # Define arguments
     parser.add_argument(
@@ -261,6 +261,13 @@ def main():
         help="Enables potential takeover when tools are used, it is placed after the system prompt, if given"
     )
 
+    # Parameter: debug
+    parser.add_argument(
+        "--debug",
+        action="store_true",
+        help="Initialize the environment and enter interactive mode"
+    )
+
     args = parser.parse_args()
 
     host_url = args.host
@@ -336,6 +343,21 @@ def main():
                 print(f"Error loading tool module '{module_name}': {e}", file=sys.stderr)
                 sys.exit(1)
     ollama_tools = to_ollama_tools(loaded_tools) if loaded_tools else None
+
+    if args.debug:
+        import code
+        print(f"Debug mode: model={args.model}, host={host_url}")
+        local_vars = {
+            'client': client,
+            'loaded_tools': loaded_tools,
+            'ollama_tools': ollama_tools,
+            'args': args,
+            'host_url': host_url,
+            'sys': sys,
+            'os': os,
+        }
+        code.interact(local=locals())
+        sys.exit(0)
 
     # Handle --help-tools
     if args.help_tools:
