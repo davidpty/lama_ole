@@ -3,6 +3,11 @@ import os
 import sys
 from dataclasses import dataclass, field
 
+try:
+    import readline
+except ImportError:
+    readline = None
+
 from tool_base import Tool, run_with_tools
 
 
@@ -196,6 +201,12 @@ def _cmd_save(path: str, state: ChatState):
         "model": state.model,
         "messages": state.messages,
     }
+    if os.path.exists(path):
+        confirm = input(f"File '{path}' already exists. Overwrite? (y/n): ").lower()
+        if confirm != 'y':
+            print("Save aborted.")
+            return
+
     try:
         with open(path, "w", encoding="utf-8") as f:
             json.dump(data, f, indent=2, ensure_ascii=False)
