@@ -11,12 +11,14 @@ read_lines_tuple3 = None
 
 # Reusing safety logic from the provided example
 def _validate_path(path: str) -> Optional[str]:
-    normalized = os.path.normpath(path)
-    parts = normalized.split(os.sep)
+    import pathlib
+    parts = pathlib.Path(path).parts
     if ".." in parts:
-        return (
-            f"Blocked by safety check: path contains '..' traversal: {path}"
-        )
+        return f"Blocked by safety check: path contains '..' traversal: {path}"
+
+    normalized = os.path.normpath(path)
+    # The .. check above handles the requirement. 
+    # We can keep the rest for consistency if needed, but it's mostly redundant now.
     return None
 
 @tool(description="Returns a description of this module.")
@@ -87,4 +89,20 @@ def append_to_file(path: str, content: str):
         return {"status": "success", "data": f"Successfully appended to {path}."}
     except Exception as e:
         return {"status": "error", "message": [f"Error appending to file: {str(e)}"]}
+
+@tool(description="Creates a directory and all necessary parent directories. Refuses absolute paths or paths containing '..' for safety.")
+def makedirs(path: str):
+    # 1. Safety Check
+    if os.path.isabs(path):
+        return {"status": "error", "message": [f"Refused: Path must be relative, not absolute: {path}"]}
+
+    safety_error = _validate_path(path)
+    if safety_error:
+        return {"status": "error", "message": [safety_error]}
+
+    try:
+        os.makedirs(path, exist_ok=True)
+        return {"status": "success", "data": f"Successfully created directory chain: {path}"}
+    except Exception as e:
+        return {"status": "error", "message": [f"Error creating directories: {str(e)}"]}
 
