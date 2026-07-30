@@ -6,7 +6,7 @@ import glob as glob_mod
 import subprocess
 import py_compile
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Any, Dict
 
 from tool_base import tool
 
@@ -43,84 +43,124 @@ def _validate_path(path: str) -> Optional[str]:
 
 
 @tool(description="Read the contents of a file")
-def read_file(path: str) -> str:
-    with open(path, "r", encoding="utf-8") as f:
-        return f.read()
+def read_file(path: str) -> Dict[str, Any]:
+    safety_error = _validate_path(path)
+    if safety_error:
+        return {"status": "error", "message": [safety_error]}
+
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            content = f.read()
+        return {"status": "success", "data": content}
+    except Exception as e:
+        return {"status": "error", "message": [str(e)]}
 
 @tool(description="List entries in a directory")
-def list_dir(path: str = ".") -> str:
-    entries = os.listdir(path)
-    lines = []
-    for name in sorted(entries):
-        full = os.path.join(path, name)
-        if os.path.isdir(full):
-            lines.append(f"{name}/")
-        else:
-            size = os.path.getsize(full)
-            lines.append(f"{name}  ({size} bytes)")
-    return "\n".join(lines) if lines else "(empty directory)"
+def list_dir(path: str = ".") -> Dict[str, Any]:
+    safety_error = _validate_path(path)
+    if safety_error:
+        return {"status": "error", "message": [safety_error]}
+
+    try:
+        entries = os.listdir(path)
+        lines = []
+        for name in sorted(entries):
+            full = os.path.join(path, name)
+            if os.path.isdir(full):
+                lines.append(f"{name}/")
+            else:
+                size = os.path.getsize(full)
+                lines.append(f"{name}  ({size} bytes)")
+        content = "\n".join(lines) if lines else "(empty directory)"
+        return {"status": "success", "data": content}
+    except Exception as e:
+        return {"status": "error", "message": [str(e)]}
 
 
 @tool(description="Search for a regex pattern in files under a path")
-def grep(pattern: str, path: str = ".", include: str = "*") -> str:
-    matches = []
-    if os.path.isfile(path):
-        files_to_search = [path]
-    elif os.path.isdir(path):
-        files_to_search = []
-        for root, _, files in os.walk(path):
-            for fname in files:
-                if glob_mod.fnmatch.fnmatch(fname, include):
-                    files_to_search.append(os.path.join(root, fname))
-    else:
-        return "(no matches or path not found)"
+def grep(pattern: str, path: str = ".", include: str = "*") -> Dict[str, Any]:
+    safety_error = _validate_path(path)
+    if safety_error:
+        return {"status": "error", "message": [safety_error]}
 
-    for fpath in files_to_search:
-        try:
-            with open(fpath, "r", encoding="utf-8", errors="replace") as f:
-                for i, line in enumerate(f, 1):
-                    if re.search(pattern, line):
-                        matches.append(f"{fpath}:{i}: {line.rstrip()}")
-        except Exception:
-            pass
-    return "\n".join(matches) if matches else "(no matches)"
+    matches = []
+    try:
+        if os.path.isfile(path):
+            files_to_search = [path]
+        elif os.path.isdir(path):
+            files_to_search = []
+            for root, _, files in os.walk(path):
+                for fname in files:
+                    if glob_mod.fnmatch.fnmatch(fname, include):
+                        files_to_search.append(os.path.join(root, fname))
+        else:
+            return {"status": "error", "message": [f"Path not found: {path}"]}
+
+        for fpath in files_to_search:
+            try:
+                with open(fpath, "r", encoding="utf-8", errors="replace") as f:
+                    for i, line in enumerate(f, 1):
+                        if re.search(pattern, line):
+                            matches.append(f"{fpath}:{i}: {line.rstrip()}")
+            except Exception:
+                pass
+        content = "\n".join(matches) if matches else "(no matches)"
+        return {"status": "success", "data": content}
+    except Exception as e:
+        return {"status": "error", "message": [str(e)]}
 
 @tool(description="Search for a fixed string pattern in files under a path")
-def grepF(pattern: str, path: str = ".", include: str = "*") -> str:
-    matches = []
-    if os.path.isfile(path):
-        files_to_search = [path]
-    elif os.path.isdir(path):
-        files_to_search = []
-        for root, _dirs, files in os.walk(path):
-            for fname in files:
-                if glob_mod.fnmatch.fnmatch(fname, include):
-                    files_to_search.append(os.path.join(root, fname))
-    else:
-        return "(no matches or path not found)"
+def grepF(pattern: str, path: str = ".", include: str = "*") -> Dict[str, Any]:
+    safety_error = _validate_path(path)
+    if safety_error:
+        return {"status": "error", "message": [safety_error]}
 
-    for fpath in files_to_search:
-        try:
-            with open(fpath, "r", encoding="utf-8", errors="replace") as f:
-                for i, line in enumerate(f, 1):
-                    if re.search(re.escape(pattern), line):
-                        matches.append(f"{fpath}:{i}: {line.rstrip()}")
-        except Exception:
-            pass
-    return "\n".join(matches) if matches else "(no matches)"
+    matches = []
+    try:
+        if os.path.isfile(path):
+            files_to_search = [path]
+        elif os.path.isdir(path):
+            files_to_search = []
+            for root, _dirs, files in os.walk(path):
+                for fname in files:
+                    if glob_mod.fnmatch.fnmatch(fname, include):
+                        files_to_search.append(os.path.join(root, fname))
+        else:
+            return {"status": "error", "message": [f"Path not found: {path}"]}
+
+        for fpath in files_to_search:
+            try:
+                with open(fpath, "r", encoding="utf-8", errors="replace") as f:
+                    for i, line in enumerate(f, 1):
+                        if re.search(re.escape(pattern), line):
+                            matches.append(f"{fpath}:{i}: {line.rstrip()}")
+            except Exception:
+                pass
+        content = "\n".join(matches) if matches else "(no matches)"
+        return {"status": "success", "data": content}
+    except Exception as e:
+        return {"status": "error", "message": [str(e)]}
 
 
 @tool(description="Find files matching a glob pattern")
-def glob_pattern(pattern: str) -> str:
-    results = glob_mod.glob(pattern, recursive=True)
-    return "\n".join(sorted(results)) if results else "(no matches)"
+def glob_pattern(pattern: str) -> Dict[str, Any]:
+    try:
+        results = glob_mod.glob(pattern, recursive=True)
+        content = "\n".join(sorted(results)) if results else "(no matches)"
+        return {"status": "success", "data": content}
+    except Exception as e:
+        return {"status": "error", "message": [str(e)]}
 
 
 @tool(description="Get metadata about a file or directory")
-def file_info(path: str) -> str:
+def file_info(path: str) -> Dict[str, Any]:
+    safety_error = _validate_path(path)
+    if safety_error:
+        return {"status": "error", "message": [safety_error]}
+
     p = Path(path)
     if not p.exists():
-        return f"Error: {path} does not exist"
+        return {"status": "error", "message": [f"{path} does not exist"]}
     stat = p.stat()
     lines = [
         f"Path: {p.resolve()}",
@@ -129,14 +169,20 @@ def file_info(path: str) -> str:
         f"Modified: {stat.st_mtime}",
         f"Permissions: {oct(stat.st_mode & 0o777)}",
     ]
-    return "\n".join(lines)
+    return {"status": "success", "data": "\n".join(lines)}
 
 
 @tool(description="Check a Python file for syntax errors")
-def syntax_check(path: str) -> str:
+def syntax_check(path: str) -> Dict[str, Any]:
+    safety_error = _validate_path(path)
+    if safety_error:
+        return {"status": "error", "message": [safety_error]}
+
     try:
         py_compile.compile(path, doraise=True)
-        return f"{path}: syntax OK"
+        return {"status": "success", "data": f"{path}: syntax OK"}
     except py_compile.PyCompileError as e:
-        return f"{path}: {e}"
+        return {"status": "error", "message": [f"{path}: {e}"]}
+    except Exception as e:
+        return {"status": "error", "message": [str(e)]}
 
