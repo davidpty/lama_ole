@@ -40,7 +40,7 @@ def main():
     parser.add_argument(
         "-V", "--version",
         action="version",
-        version="0.0.26"
+        version="0.0.27"
     )
     # Define arguments
     parser.add_argument(
@@ -76,15 +76,28 @@ def main():
     )
     # parameter for thoughts
     parser.add_argument(
-        "--thoughtfile",
+        "--thoughtlog",
         type=str,
-        help="Path to a file where the model's thoughts should be saved (independently of -t)"
+        help="Path to a log file where the model's thoughts should be saved (independently of -t)"
     )
-    # Added requested parameter: -o or --outfile
+    # Added requested parameter: -o or --outlog
     parser.add_argument(
-        "-o", "--outfile",
+        "-o", "--outlog",
         type=str,
-        help="Path to a file where the main output of the model should be saved"
+        help="Path to a log file where the main output of the model should be saved"
+    )
+    # Parameter for tool calls log file (similar to -v but writes to a file)
+    parser.add_argument(
+        "--toolcalllog",
+        type=str,
+        help="Path to a log file where tool calls should be logged (similar to -v output)"
+    )
+
+    # Parameter for chat input log file
+    parser.add_argument(
+        "--chatinputlog",
+        type=str,
+        help="Path to a log file where all user input (stdin, --input/--inputfile, and chat REPL) should be logged with timestamps"
     )
     # Parameter: temperature
     parser.add_argument(
@@ -422,19 +435,35 @@ def main():
     thought_file_handle = None
     output_file_handle = None
 
-    # Open the thought file if provided
-    if args.thoughtfile:
-        if os.path.exists(args.thoughtfile):
-            print(f"Error: The file '{args.thoughtfile}' already exists.", file=sys.stderr)
+    # Open the thought log if provided
+    if args.thoughtlog:
+        if os.path.exists(args.thoughtlog):
+            print(f"Error: The file '{args.thoughtlog}' already exists.", file=sys.stderr)
             sys.exit(1)
-        thought_file_handle = open(args.thoughtfile, "w", encoding="utf-8")
+        thought_file_handle = open(args.thoughtlog, "w", encoding="utf-8")
 
-    # Open the output file if provided
-    if args.outfile:
-        if os.path.exists(args.outfile):
-            print(f"Error: The file '{args.outfile}' already exists.", file=sys.stderr)
+    # Open the output log if provided
+    if args.outlog:
+        if os.path.exists(args.outlog):
+            print(f"Error: The file '{args.outlog}' already exists.", file=sys.stderr)
             sys.exit(1)
-        output_file_handle = open(args.outfile, "w", encoding="utf-8")
+        output_file_handle = open(args.outlog, "w", encoding="utf-8")
+
+    # Open the toolcall log if provided
+    toolcall_file_handle = None
+    if args.toolcalllog:
+        if os.path.exists(args.toolcalllog):
+            print(f"Error: The file '{args.toolcalllog}' already exists.", file=sys.stderr)
+            sys.exit(1)
+        toolcall_file_handle = open(args.toolcalllog, "w", encoding="utf-8")
+
+    # Open the chat input log if provided
+    chatinput_file_handle = None
+    if args.chatinputlog:
+        if os.path.exists(args.chatinputlog):
+            print(f"Error: The file '{args.chatinputlog}' already exists.", file=sys.stderr)
+            sys.exit(1)
+        chatinput_file_handle = open(args.chatinputlog, "w", encoding="utf-8")
 
     try:
         options = {
@@ -462,6 +491,8 @@ def main():
                 safe=args.safe,
                 thought_file_handle=thought_file_handle,
                 output_file_handle=output_file_handle,
+                toolcall_file_handle=toolcall_file_handle,
+                chatinput_file_handle=chatinput_file_handle,
                 max_tool_rounds=args.max_tool_rounds,
                 max_tool_rounds_continuation=args.max_tool_rounds_continuation,
                 ollama_websearch=args.ollama_websearch,
@@ -483,6 +514,8 @@ def main():
                     safe=args.safe,
                     thought_file_handle=thought_file_handle,
                     output_file_handle=output_file_handle,
+                    toolcall_file_handle=toolcall_file_handle,
+                    chatinput_file_handle=chatinput_file_handle,
                     max_tool_rounds=args.max_tool_rounds,
                     max_tool_rounds_continuation=args.max_tool_rounds_continuation,
                     ollama_websearch=args.ollama_websearch,
@@ -505,6 +538,8 @@ def main():
                 safe=args.safe,
                 thought_file_handle=thought_file_handle,
                 output_file_handle=output_file_handle,
+                toolcall_file_handle=toolcall_file_handle,
+                chatinput_file_handle=chatinput_file_handle,
                 max_tool_rounds=args.max_tool_rounds,
                 max_tool_rounds_continuation=args.max_tool_rounds_continuation,
                 ollama_websearch=args.ollama_websearch,
@@ -520,6 +555,10 @@ def main():
             thought_file_handle.close()
         if output_file_handle:
             output_file_handle.close()
+        if toolcall_file_handle:
+            toolcall_file_handle.close()
+        if chatinput_file_handle:
+            chatinput_file_handle.close()
 
 # ---------------------------------------------------------------------------
 # Transfer implementation

@@ -43,7 +43,7 @@ lama_ole/
 ### Key Patterns
 
 - **Tool calling:** Python functions → JSON Schema inference → Ollama tool format conversion (`to_ollama_tools()`) → stream-based execution loop.
-- **Thinking process:** Ollama's `msg.thinking` field is printed/flushed in real-time when `-t` or `--thoughtfile` is set.
+- **Thinking process:** Ollama's `msg.thinking` field is printed/flushed in real-time when `-t` or `--thoughtlog` is set.
 - **Safety system prompt:** Hardcoded in `tool_base.py`; injected automatically unless `--no_safety_system_prompt` is given.
 - **Model transfer:** Reads Ollama's local manifest/blobs, uploads via HTTP API to destination, rewrites Modelfile paths. Supports local→remote and remote→local (via blob server).
 

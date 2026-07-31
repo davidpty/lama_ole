@@ -3,11 +3,25 @@ import json
 import importlib
 import inspect
 import sys
+import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any, Optional
 
 from ollama import Tool as OllamaTool
+
+
+def _state_ts(handle) -> None:
+    """Write one timestamp line at the start of a state. Bounded by newlines."""
+    ts = time.strftime("%Y-%m-%d %H:%M:%S")
+    handle.write(f"\nTIME: {ts}\n")
+
+
+def _write_input(handle, text: str) -> None:
+    """Write user input with a timestamp line before it. Bounded by newlines."""
+    ts = time.strftime("%Y-%m-%d %H:%M:%S")
+    handle.write(f"\nTIME: {ts}\n{text}")
+
 
 def create_uuid_15() :
     return uuid.uuid4().hex[:15]
@@ -178,6 +192,8 @@ def run_with_tools(
     safe=False,
     thought_file_handle=None,
     output_file_handle=None,
+    toolcall_file_handle=None,
+    chatinput_file_handle=None,
     max_tool_rounds=None,
     max_tool_rounds_continuation="ask",
     ollama_websearch=False,
@@ -303,6 +319,9 @@ def run_with_tools(
                         think_state = True
                     print(msg.thinking, end='', flush=True)
                 if thought_file_handle:
+                    if not getattr(thought_file_handle, "_ts_written", False):
+                        _state_ts(thought_file_handle)
+                        thought_file_handle._ts_written = True
                     thought_file_handle.write(msg.thinking)
                     thought_file_handle.flush()
 
@@ -315,6 +334,9 @@ def run_with_tools(
                 response_content += msg.content
                 print(msg.content, end='', flush=True)
                 if output_file_handle:
+                    if not getattr(output_file_handle, "_ts_written", False):
+                        _state_ts(output_file_handle)
+                        output_file_handle._ts_written = True
                     output_file_handle.write(msg.content)
                     output_file_handle.flush()
 
@@ -362,6 +384,13 @@ def run_with_tools(
                         file=sys.stderr,
                         flush=True,
                     )
+
+                if toolcall_file_handle and not getattr(toolcall_file_handle, "_ts_written", False):
+                    _state_ts(toolcall_file_handle)
+                    toolcall_file_handle._ts_written = True
+                    toolcall_file_handle.flush()
+                if toolcall_file_handle:
+                    toolcall_file_handle.write(f"[tool: {tool_name}({args_str})]\n")
 
                 if tool_obj:
                     should_run = True
@@ -433,6 +462,10 @@ def run_with_tools(
                     f"---END DATA---"
                 )
                 # --- NEW NONCE LOGIC END ---
+
+                if toolcall_file_handle:
+                    toolcall_file_handle.write(f"[result: {nonce_wrapped_content}]\n")
+                    toolcall_file_handle.flush()
 
                 messages.append({
                     "role": "tool",

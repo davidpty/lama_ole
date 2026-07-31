@@ -10,8 +10,8 @@ flexible input/output options.
 
 - **Streaming Support** — Real-time output as the model generates text.
 - **Thinking Process** — Display or save the model's internal thought process
-  (`-t`, `--thoughtfile`).
-- **Output Redirection** — Save generated content to a file (`-o`).
+  (`-t`, `--thoughtlog`).
+- **Output Redirection** — Save generated content to a log file (`-o`).
 - **Flexible Input** — Direct string (`-i`), file (`-f`), or stdin (`--stdin`).
 - **Chat Mode** — Multi-turn REPL with slash commands (`--chat`).
 - **Tool Calling** — Load Python modules as callable tools (`--tool`).
@@ -56,7 +56,7 @@ python3 lama_ole.py -m gemma2:2b -t -i "Solve a complex math problem step by ste
 
 ```bash
 python3 lama_ole.py -m gemma2:2b -i "Write a story" \
-    --thoughtfile thoughts.txt -o story.txt
+    --thoughtlog thoughts.txt -o story.txt
 ```
 
 ### Piping Input
@@ -281,9 +281,9 @@ In chat mode (`--chat`), lines starting with `/` are commands:
 | `-i, --input TEXT` | Input string for the model | |
 | `-f, --inputfile PATH` | Read input from a file | |
 | `--stdin` | Read input from standard input | |
-| `-o, --outfile PATH` | Save main output to file | |
+| `-o, --outlog PATH` | Log main output to file | |
 | `-t, --thinking` | Show model's thought process | |
-| `--thoughtfile PATH` | Save thoughts to file (independent of `-t`) | |
+| `--thoughtlog PATH` | Log thoughts to file (independent of `-t`) | |
 | `--temperature FLOAT` | Sampling temperature | `0.0` |
 | `--num_ctx INT` | Context window size | (Ollama default) |
 | `--num_gpu INT` | GPU layers to use | (Ollama default) |

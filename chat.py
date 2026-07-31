@@ -27,6 +27,8 @@ class ChatState:
     safe: bool = False
     thought_file_handle: object = None
     output_file_handle: object = None
+    toolcall_file_handle: object = None
+    chatinput_file_handle: object = None
     max_tool_rounds: int = None
     max_tool_rounds_continuation: str = "ask"
     ollama_websearch: bool = False
@@ -59,6 +61,12 @@ def run_chat(state: ChatState):
                 continue
 
             state.messages.append({"role": "user", "content": stripped})
+
+            if state.chatinput_file_handle:
+                from tool_base import _write_input
+                _write_input(state.chatinput_file_handle, f"[chat input] {stripped}\n")
+                state.chatinput_file_handle.flush()
+
             run_with_tools(
                 client=state.client,
                 model=state.model,
@@ -74,6 +82,8 @@ def run_chat(state: ChatState):
                 safe=state.safe,
                 thought_file_handle=state.thought_file_handle,
                 output_file_handle=state.output_file_handle,
+                toolcall_file_handle=state.toolcall_file_handle,
+                chatinput_file_handle=state.chatinput_file_handle,
                 max_tool_rounds=state.max_tool_rounds,
                 max_tool_rounds_continuation=state.max_tool_rounds_continuation,
                 ollama_websearch=state.ollama_websearch,
