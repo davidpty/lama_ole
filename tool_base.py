@@ -314,8 +314,9 @@ def run_with_tools(
 
             if msg.thinking:
                 if show_thinking:
+                    ts = time.strftime("%Y-%m-%d %H:%M:%S")
                     if not think_state:
-                        print("Thinking starts")
+                        print(f"[{ts}] Thinking starts")
                         think_state = True
                     print(msg.thinking, end='', flush=True)
                 if thought_file_handle:
@@ -327,8 +328,9 @@ def run_with_tools(
 
             if msg.content:
                 if think_state:
+                    ts = time.strftime("%Y-%m-%d %H:%M:%S")
                     print()
-                    print("Thinking ends")
+                    print(f"[{ts}] Thinking ends")
                     print()
                     think_state = False
                 response_content += msg.content
@@ -344,8 +346,9 @@ def run_with_tools(
                 response_tool_calls = msg.tool_calls
 
         if think_state:
+            ts = time.strftime("%Y-%m-%d %H:%M:%S")
             print()
-            print("Thinking ends")
+            print(f"[{ts}] Thinking ends")
             think_state = False
 
         print()
@@ -379,8 +382,9 @@ def run_with_tools(
                 )
 
                 if verbose >= 1:
+                    ts = time.strftime("%Y-%m-%d %H:%M:%S")
                     print(
-                        f"[tool: {tool_name}({args_str})]",
+                        f"[{ts}] [tool: {tool_name}({args_str})]",
                         file=sys.stderr,
                         flush=True,
                     )
