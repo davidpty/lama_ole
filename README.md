@@ -11,7 +11,9 @@ flexible input/output options.
 - **Streaming Support** — Real-time output as the model generates text.
 - **Thinking Process** — Display or save the model's internal thought process
   (`-t`, `--thoughtlog`).
-- **Output Redirection** — Save generated content to a log file (`-o`).
+- **Output Redirection** — Save generated content to a log file (`-o`, `--outlog`).
+- **Tool Call Logging** — Log tool calls and results to a separate file (`--toolcalllog`).
+- **Chat Input Logging** — Log chat REPL input to a separate file (`--chatinputlog`).
 - **Flexible Input** — Direct string (`-i`), file (`-f`), or stdin (`--stdin`).
 - **Chat Mode** — Multi-turn REPL with slash commands (`--chat`).
 - **Tool Calling** — Load Python modules as callable tools (`--tool`).
@@ -282,6 +284,8 @@ In chat mode (`--chat`), lines starting with `/` are commands:
 | `-f, --inputfile PATH` | Read input from a file | |
 | `--stdin` | Read input from standard input | |
 | `-o, --outlog PATH` | Log main output to file | |
+| `--toolcalllog PATH` | Log tool calls and results to a separate file | |
+| `--chatinputlog PATH` | Log chat REPL input to a separate file | |
 | `-t, --thinking` | Show model's thought process | |
 | `--thoughtlog PATH` | Log thoughts to file (independent of `-t`) | |
 | `--temperature FLOAT` | Sampling temperature | `0.0` |
@@ -303,6 +307,10 @@ In chat mode (`--chat`), lines starting with `/` are commands:
 | `--serve-blobs` | Start a blob HTTP server for remote transfer source | |
 | `--blob-host HOST` | Host to bind blob server | `127.0.0.1` |
 | `--blob-port PORT` | Port for blob server | random |
+| `--system_prompt TEXT` | System prompt passed to the model | |
+| `--system_prompt_file PATH` | Read system prompt from a file | |
+| `--no_safety_system_prompt` | Disable safety system prompt; enables potential takeover when tools are used (placed after any user-provided system prompt) | |
+| `--debug` | Initialize the environment and enter an interactive Python REPL for debugging | |
 | `-v` to `-vvv` | Verbosity level (repeat for more) | silent |
 
 ### Verbosity Levels
