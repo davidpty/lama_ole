@@ -2,6 +2,7 @@ import uuid
 import json
 import importlib
 import inspect
+import os
 import sys
 import time
 from collections.abc import Callable
@@ -175,6 +176,41 @@ def load_tools(module_name: str) -> list[Tool]:
         env_vars=dict(env_vars),
     ))
     return tools
+
+
+def _entropy_check_tool_result(result, tool_name) -> None:
+    """Defensive entropy check on a tool result dict (opt-in, see below).
+
+    Warns on stderr and truncates the data when the content looks binary or
+    random. Enabled only when LAMA_OLE_ENTROPY_CHECK is set or verbose >= 2,
+    so normal operation is not slowed down.
+    """
+    if not isinstance(result, dict) or result.get("status") != "success":
+        return
+    content = result.get("data", "")
+    if isinstance(content, bytes):
+        data_bytes = content
+    elif isinstance(content, str):
+        data_bytes = content.encode("utf-8", errors="replace")
+    else:
+        try:
+            data_bytes = json.dumps(content).encode("utf-8")
+        except Exception:
+            return
+
+    from security.entropychecker import EntropyChecker
+
+    check = EntropyChecker().feed(data_bytes)
+    if check.is_suspicious:
+        print(
+            f"[WARNING] Tool '{tool_name}' result failed entropy check: "
+            f"{check.reason}",
+            file=sys.stderr,
+        )
+        if isinstance(content, bytes):
+            result["data"] = content[:1000] + b"... [TRUNCATED BY ENTROPY CHECK]"
+        else:
+            result["data"] = str(content)[:1000] + "... [TRUNCATED BY ENTROPY CHECK]"
 
 
 def run_with_tools(
@@ -426,6 +462,11 @@ def run_with_tools(
                         result = {"status": "error", "message": f"Execution of '{tool_name}' cancelled by user (safe mode)."}
                 else:
                     result = {"status": "error", "message": f"unknown tool '{tool_name}'"}
+
+                # Defensive entropy check (opt-in): catches future tools that
+                # bypass the per-tool integration.
+                if verbose >= 2 or os.environ.get("LAMA_OLE_ENTROPY_CHECK"):
+                    _entropy_check_tool_result(result, tool_name)
 
 
                 if verbose >= 1:

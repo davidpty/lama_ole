@@ -19,6 +19,22 @@ def _validate_path(path: str) -> Optional[str]:
         )
     return None
 
+
+def _entropy_reason(path: str) -> Optional[str]:
+    """Return the entropy rejection reason for a file, or None if it passes."""
+    try:
+        with open(path, "rb") as f:
+            raw_content = f.read()
+    except Exception:
+        return None
+
+    from security.entropychecker import EntropyChecker
+
+    result = EntropyChecker().feed(raw_content)
+    if result.is_suspicious:
+        return result.reason
+    return None
+
 @tool(description="Provides help and usage instructions for the read_lines0 and patch_lines0 tools.")
 def read_lines_patch_lines_zero_based_help() :
     return """To edit a file using these tools (zero-indexed version), follow this workflow:
@@ -44,6 +60,9 @@ def grep0_from_file(pattern: str, path: str) -> str:
 
     matches = []
     try:
+        reason = _entropy_reason(path)
+        if reason is not None:
+            return f"Error: File {path} rejected by entropy check: {reason}"
         with open(path, "r", encoding="utf-8", errors="ignore") as f:
             for i, line in enumerate(f.readlines()):
                 if re.search(pattern, line):
@@ -64,6 +83,9 @@ def grep0F_from_file(needle: str, path: str) -> str:
 
     matches = []
     try:
+        reason = _entropy_reason(path)
+        if reason is not None:
+            return f"Error: File {path} rejected by entropy check: {reason}"
         with open(path, "r", encoding="utf-8", errors="ignore") as f:
             for i, line in enumerate(f.readlines()):
                 if re.search(re.escape(needle), line):
@@ -89,6 +111,10 @@ def read_lines0(path: str, from_line: int, to_line: int) -> str:
 
     if from_line >to_line :
         return f"Error: from_line >to_line"
+
+    reason = _entropy_reason(path)
+    if reason is not None:
+        return f"Error: File {path} rejected by entropy check: {reason}"
 
     with open(path, "r", encoding="utf-8") as f:
         # return ''.join( f.readlines( to_line - from_line)[from_line:]) # readlines is buggy (0 reads all lines)

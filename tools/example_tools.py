@@ -17,5 +17,17 @@ def calculate(expression: str) -> str:
 
 @tool(description="Read the contents of a file")
 def read_file(path: str) -> str:
-    with open(path) as f:
-        return f.read()
+    with open(path, "rb") as f:
+        raw_content = f.read()
+
+    # Entropy check: reject binary / random content before it reaches the LLM
+    from security.entropychecker import EntropyChecker
+
+    result = EntropyChecker().feed(raw_content)
+    if result.is_suspicious:
+        return {
+            "status": "error",
+            "message": [f"File rejected by entropy check: {result.reason}"],
+        }
+
+    return raw_content.decode("utf-8", errors="replace")

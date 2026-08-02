@@ -67,3 +67,21 @@ All new tools and refactored existing tools **must** follow the pattern used in 
     -   **Success**: `{"status": "success", "data": <content>}` (where `<content>` can be a string or JSON-serializable object).
     -   **Error**: `{"status": "error", "message": [<list_of_strings_or_string>]}`.
 3.  **Safety Checks**: Perform validation (e.g., path traversal checks, permission checks) at the beginning of the function and return an error dictionary if validation fails.
+
+---
+
+### Python 3.9+ Compatibility (Mandatory)
+
+The project targets **Python 3.9 and newer** (the repo ships `cpython-39` byte-code
+caches). Code must run unchanged on 3.9, so avoid Python 3.10+ syntax and stdlib:
+
+- **No PEP 604 unions at runtime** — `bytes | str`, `str | None`, etc. raise
+  `TypeError` on 3.9. Prefer `typing.Optional` / `typing.Union`.
+- **If you must use `|` unions**, add `from __future__ import annotations` as the first
+  statement after the module docstring. Annotations then become lazily-evaluated strings
+  and are never resolved at import time (see `security/entropychecker.py`).
+- **No other 3.10+ syntax**: `match`/`case`, parenthesized context managers.
+- **No 3.10+ stdlib**: `tomllib`, `zoneinfo`, `str.removeprefix`/`removesuffix`,
+  `itertools.pairwise`, etc.
+- PEP 585 generics (`list[str]`, `dict[str, int]`) are fine in 3.9, and are safe in
+  annotations with `from __future__ import annotations`.

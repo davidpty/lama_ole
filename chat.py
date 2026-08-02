@@ -172,11 +172,22 @@ def _cmd_feed(path: str, state: ChatState):
         print(f"Error: file not found: {path}")
         return
     try:
-        with open(path, encoding="utf-8") as f:
-            content = f.read()
+        with open(path, "rb") as f:
+            raw_content = f.read()
     except Exception as e:
         print(f"Error reading file: {e}")
         return
+
+    # Entropy check: reject binary / random content before it enters the conversation
+    from security.entropychecker import EntropyChecker
+
+    checker = EntropyChecker()
+    result = checker.feed(raw_content)
+    if result.is_suspicious:
+        print(f"Error: {path} rejected by entropy check: {result.reason}")
+        return
+
+    content = raw_content.decode("utf-8", errors="replace")
     state.messages.append({"role": "user", "content": content})
     print(f"Loaded {len(content)} characters from {path}")
     try:

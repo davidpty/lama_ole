@@ -42,6 +42,29 @@ def _validate_path(path: str) -> Optional[str]:
     return None
 
 
+def _read_file_entropy_checked(path: str) -> Optional[bytes]:
+    """Read a file as bytes, or None if it fails the entropy check."""
+    from security.entropychecker import EntropyChecker
+
+    with open(path, "rb") as f:
+        raw_content = f.read()
+
+    if EntropyChecker().feed(raw_content).is_suspicious:
+        return None
+    return raw_content
+
+
+def _append_skipped_files(content: str, skipped_files: list) -> str:
+    """Append a summary of entropy-skipped files to a grep result string."""
+    if not skipped_files:
+        return content
+    warning = (
+        f"\n[Skipped {len(skipped_files)} file(s) due to entropy check]:\n"
+        + "\n".join(f"  - {sf}" for sf in skipped_files)
+    )
+    return content + warning
+
+
 @tool(description="Read the contents of a file")
 def read_file(path: str) -> Dict[str, Any]:
     safety_error = _validate_path(path)
@@ -49,8 +72,19 @@ def read_file(path: str) -> Dict[str, Any]:
         return {"status": "error", "message": [safety_error]}
 
     try:
-        with open(path, "r", encoding="utf-8") as f:
-            content = f.read()
+        with open(path, "rb") as f:
+            raw_content = f.read()
+
+        from security.entropychecker import EntropyChecker
+
+        result = EntropyChecker().feed(raw_content)
+        if result.is_suspicious:
+            return {
+                "status": "error",
+                "message": [f"File rejected by entropy check: {result.reason}"],
+            }
+
+        content = raw_content.decode("utf-8", errors="replace")
         return {"status": "success", "data": content}
     except Exception as e:
         return {"status": "error", "message": [str(e)]}
@@ -84,6 +118,7 @@ def grep(pattern: str, path: str = ".", include: str = "*") -> Dict[str, Any]:
         return {"status": "error", "message": [safety_error]}
 
     matches = []
+    skipped_files = []
     try:
         if os.path.isfile(path):
             files_to_search = [path]
@@ -98,13 +133,19 @@ def grep(pattern: str, path: str = ".", include: str = "*") -> Dict[str, Any]:
 
         for fpath in files_to_search:
             try:
-                with open(fpath, "r", encoding="utf-8", errors="replace") as f:
-                    for i, line in enumerate(f, 1):
-                        if re.search(pattern, line):
-                            matches.append(f"{fpath}:{i}: {line.rstrip()}")
+                raw_content = _read_file_entropy_checked(fpath)
+                if raw_content is None:
+                    skipped_files.append(fpath)
+                    continue
+
+                content = raw_content.decode("utf-8", errors="replace")
+                for i, line in enumerate(content.splitlines(), 1):
+                    if re.search(pattern, line):
+                        matches.append(f"{fpath}:{i}: {line.rstrip()}")
             except Exception:
                 pass
         content = "\n".join(matches) if matches else "(no matches)"
+        content = _append_skipped_files(content, skipped_files)
         return {"status": "success", "data": content}
     except Exception as e:
         return {"status": "error", "message": [str(e)]}
@@ -116,27 +157,33 @@ def grepF(pattern: str, path: str = ".", include: str = "*") -> Dict[str, Any]:
         return {"status": "error", "message": [safety_error]}
 
     matches = []
+    skipped_files = []
     try:
         if os.path.isfile(path):
             files_to_search = [path]
         elif os.path.isdir(path):
             files_to_search = []
             for root, _dirs, files in os.walk(path):
-                for fname in files:
-                    if glob_mod.fnmatch.fnmatch(fname, include):
-                        files_to_search.append(os.path.join(root, fname))
+                if glob_mod.fnmatch.fnmatch(fname, include):
+                    files_to_search.append(os.path.join(root, fname))
         else:
             return {"status": "error", "message": [f"Path not found: {path}"]}
 
         for fpath in files_to_search:
             try:
-                with open(fpath, "r", encoding="utf-8", errors="replace") as f:
-                    for i, line in enumerate(f, 1):
-                        if re.search(re.escape(pattern), line):
-                            matches.append(f"{fpath}:{i}: {line.rstrip()}")
+                raw_content = _read_file_entropy_checked(fpath)
+                if raw_content is None:
+                    skipped_files.append(fpath)
+                    continue
+
+                content = raw_content.decode("utf-8", errors="replace")
+                for i, line in enumerate(content.splitlines(), 1):
+                    if re.search(re.escape(pattern), line):
+                        matches.append(f"{fpath}:{i}: {line.rstrip()}")
             except Exception:
                 pass
         content = "\n".join(matches) if matches else "(no matches)"
+        content = _append_skipped_files(content, skipped_files)
         return {"status": "success", "data": content}
     except Exception as e:
         return {"status": "error", "message": [str(e)]}
