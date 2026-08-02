@@ -327,7 +327,7 @@ class EntropyChecker:
         self,
         window_size: int = 1024,
         safe_ratio_threshold: float = 0.85,
-        unique_byte_threshold: int = 64,
+        unique_byte_threshold: int = 150,
         zip_size_limit: int = 65536,
         zip_ratio_threshold: float = 0.95,
     ):
