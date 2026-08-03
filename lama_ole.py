@@ -40,7 +40,7 @@ def main():
     parser.add_argument(
         "-V", "--version",
         action="version",
-        version="0.0.31"
+        version="0.0.32"
     )
     # Define arguments
     parser.add_argument(
