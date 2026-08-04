@@ -11,6 +11,8 @@ from typing import Any, Optional
 
 from ollama import Tool as OllamaTool
 
+from color_util import C_OUTPUT, C_THINK, color_mode_enabled, colored
+
 
 def _state_ts(handle) -> None:
     """Write one timestamp line at the start of a state. Bounded by newlines."""
@@ -232,10 +234,12 @@ def run_with_tools(
     max_tool_rounds=None,
     max_tool_rounds_continuation="ask",
     ollama_websearch=False,
+    color="auto",
 ):
     tool_rounds = 0
     think_state = False
     final_response = ""
+    use_color = color_mode_enabled(color)
 
     has_system = any(m.get("role") == "system" for m in messages)
     if not has_system:
@@ -351,9 +355,9 @@ def run_with_tools(
                 if show_thinking:
                     ts = time.strftime("%Y-%m-%d %H:%M:%S")
                     if not think_state:
-                        print(f"[{ts}] Thinking starts")
+                        print(colored(f"[{ts}] Thinking starts", C_THINK, use_color))
                         think_state = True
-                    print(msg.thinking, end='', flush=True)
+                    print(colored(msg.thinking, C_THINK, use_color), end='', flush=True)
                 if thought_file_handle:
                     if not getattr(thought_file_handle, "_ts_written", False):
                         _state_ts(thought_file_handle)
@@ -365,11 +369,11 @@ def run_with_tools(
                 if think_state:
                     ts = time.strftime("%Y-%m-%d %H:%M:%S")
                     print()
-                    print(f"[{ts}] Thinking ends")
+                    print(colored(f"[{ts}] Thinking ends", C_THINK, use_color))
                     print()
                     think_state = False
                 response_content += msg.content
-                print(msg.content, end='', flush=True)
+                print(colored(msg.content, C_OUTPUT, use_color), end='', flush=True)
                 if output_file_handle:
                     if not getattr(output_file_handle, "_ts_written", False):
                         _state_ts(output_file_handle)
@@ -383,7 +387,7 @@ def run_with_tools(
         if think_state:
             ts = time.strftime("%Y-%m-%d %H:%M:%S")
             print()
-            print(f"[{ts}] Thinking ends")
+            print(colored(f"[{ts}] Thinking ends", C_THINK, use_color))
             think_state = False
 
         print()

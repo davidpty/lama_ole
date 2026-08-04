@@ -10,6 +10,8 @@ except ImportError:
 
 from tool_base import Tool, run_with_tools
 
+from color_util import C_PROMPT, color_mode_enabled, colored
+
 
 @dataclass
 class ChatState:
@@ -32,14 +34,17 @@ class ChatState:
     max_tool_rounds: int = None
     max_tool_rounds_continuation: str = "ask"
     ollama_websearch: bool = False
+    color: object = "auto"
 
 
 def run_chat(state: ChatState):
     print("Chat mode. Type /help for commands.")
+    use_color = color_mode_enabled(state.color)
+    prompt = colored(">>> ", C_PROMPT, use_color)
 
     while True:
         try:
-            line = input(">>> ")
+            line = input(prompt)
         except EOFError:
             print()
             break
@@ -87,6 +92,7 @@ def run_chat(state: ChatState):
                 max_tool_rounds=state.max_tool_rounds,
                 max_tool_rounds_continuation=state.max_tool_rounds_continuation,
                 ollama_websearch=state.ollama_websearch,
+                color=state.color,
             )
         except KeyboardInterrupt:
             print("\nInterrupted.")
@@ -208,6 +214,7 @@ def _cmd_feed(path: str, state: ChatState):
             max_tool_rounds=state.max_tool_rounds,
             max_tool_rounds_continuation=state.max_tool_rounds_continuation,
             ollama_websearch=state.ollama_websearch,
+            color=state.color,
         )
     except Exception as e:
         print(f"Error: {e}", file=sys.stderr)
