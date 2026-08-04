@@ -175,6 +175,15 @@ def main():
         help="Start an interactive chat REPL session"
     )
 
+    # Parameter: color
+    parser.add_argument(
+        "--color",
+        type=str,
+        default="auto",
+        choices=["auto", "always", "never"],
+        help="Colorize user input, thinking, and LLM output: 'auto' (TTY only), 'always', or 'never' (default: auto)"
+    )
+
     # Parameter: safe
     parser.add_argument(
         "--safe",
@@ -519,6 +528,7 @@ def main():
                     max_tool_rounds=args.max_tool_rounds,
                     max_tool_rounds_continuation=args.max_tool_rounds_continuation,
                     ollama_websearch=args.ollama_websearch,
+                    color=args.color,
                 )
             run_chat(state)
         else:
@@ -543,6 +553,7 @@ def main():
                 max_tool_rounds=args.max_tool_rounds,
                 max_tool_rounds_continuation=args.max_tool_rounds_continuation,
                 ollama_websearch=args.ollama_websearch,
+                color=args.color,
             )
 
     except KeyboardInterrupt:
