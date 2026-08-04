@@ -81,7 +81,7 @@ def get_ollama_host() -> str:
 
 DANGEROUS_TOOLS = {
     "run_command", "write_file", "append_file", "replace_in_file",
-    "delete_file",
+    "delete_file", "edit", "append_to_file", 
 }
 
 
