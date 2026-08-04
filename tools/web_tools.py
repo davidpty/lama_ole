@@ -72,19 +72,24 @@ def web_search(query: str, timeout: int = 15) -> str:
     import urllib.parse
 
     encoded = urllib.parse.quote(query)
-    url = f"https://html.duckduckgo.com/html/?q={encoded}"
+    url = f"https://lite.duckduckgo.com/lite/?q={encoded}"
     html = web_fetch(url, timeout=timeout)
     if html.startswith("Error") or html.startswith("HTTP"):
         return html
 
     results = []
     for match in re.finditer(
-        r'<a[^>]+class="result__a"[^>]+href="([^"]+)"[^>]*>(.*?)</a>',
+        r"<a[^>]+class='result-link'[^>]*>(.*?)</a>",
         html,
         re.DOTALL,
     ):
-        link = match.group(1)
-        title = re.sub(r"<[^>]+>", "", match.group(2)).strip()
+        link_tag = match.group(0)
+        href_m = re.search(r'href="([^"]+)"', link_tag)
+        link = href_m.group(1) if href_m else ""
+        title = re.sub(r"<[^>]+>", "", match.group(1)).strip()
+        uddg = re.search(r"[?&]uddg=([^&]+)", link)
+        if uddg:
+            link = urllib.parse.unquote(uddg.group(1))
         results.append(f"{title}\n  {link}")
 
     if not results:
