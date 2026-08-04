@@ -21,6 +21,10 @@ _DANGEROUS_PATTERNS = [
     r">\s*/dev/",
 ]
 
+DIRECTORIES_TO_AVOID = [
+    ".git",
+    "__pycache__",
+]
 
 def _validate_command(command: str) -> Optional[str]:
     for pattern in _DANGEROUS_PATTERNS:
@@ -112,10 +116,13 @@ def list_dir(path: str = ".") -> Dict[str, Any]:
 
 
 @tool(description="Search for a regex pattern in files under a path")
-def grep(pattern: str, path: str = ".", include: str = "*") -> Dict[str, Any]:
+def grep(pattern: str, path: str = ".", include: str = "*", fixed = False) -> Dict[str, Any]:
     safety_error = _validate_path(path)
     if safety_error:
         return {"status": "error", "message": [safety_error]}
+
+    if fixed:
+        pattern = re.escape(pattern)
 
     matches = []
     skipped_files = []
@@ -125,6 +132,8 @@ def grep(pattern: str, path: str = ".", include: str = "*") -> Dict[str, Any]:
         elif os.path.isdir(path):
             files_to_search = []
             for root, _, files in os.walk(path):
+                if any( [ x in DIRECTORIES_TO_AVOID for x in root.split('/')]):
+                    continue
                 for fname in files:
                     if glob_mod.fnmatch.fnmatch(fname, include):
                         files_to_search.append(os.path.join(root, fname))
@@ -139,6 +148,7 @@ def grep(pattern: str, path: str = ".", include: str = "*") -> Dict[str, Any]:
                     continue
 
                 content = raw_content.decode("utf-8", errors="replace")
+
                 for i, line in enumerate(content.splitlines(), 1):
                     if re.search(pattern, line):
                         matches.append(f"{fpath}:{i}: {line.rstrip()}")
@@ -152,41 +162,7 @@ def grep(pattern: str, path: str = ".", include: str = "*") -> Dict[str, Any]:
 
 @tool(description="Search for a fixed string pattern in files under a path")
 def grepF(pattern: str, path: str = ".", include: str = "*") -> Dict[str, Any]:
-    safety_error = _validate_path(path)
-    if safety_error:
-        return {"status": "error", "message": [safety_error]}
-
-    matches = []
-    skipped_files = []
-    try:
-        if os.path.isfile(path):
-            files_to_search = [path]
-        elif os.path.isdir(path):
-            files_to_search = []
-            for root, _dirs, files in os.walk(path):
-                if glob_mod.fnmatch.fnmatch(fname, include):
-                    files_to_search.append(os.path.join(root, fname))
-        else:
-            return {"status": "error", "message": [f"Path not found: {path}"]}
-
-        for fpath in files_to_search:
-            try:
-                raw_content = _read_file_entropy_checked(fpath)
-                if raw_content is None:
-                    skipped_files.append(fpath)
-                    continue
-
-                content = raw_content.decode("utf-8", errors="replace")
-                for i, line in enumerate(content.splitlines(), 1):
-                    if re.search(re.escape(pattern), line):
-                        matches.append(f"{fpath}:{i}: {line.rstrip()}")
-            except Exception:
-                pass
-        content = "\n".join(matches) if matches else "(no matches)"
-        content = _append_skipped_files(content, skipped_files)
-        return {"status": "success", "data": content}
-    except Exception as e:
-        return {"status": "error", "message": [str(e)]}
+    return grep( pattern, path, include, fixed = True)
 
 
 @tool(description="Find files matching a glob pattern")
