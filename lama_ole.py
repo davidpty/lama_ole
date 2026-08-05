@@ -32,9 +32,119 @@ from tool_base import (
 )
 from chat import ChatState, run_chat
 
-def main():
+# ---------------------------------------------------------------------------
+# Configuration defaults (env vars + config files)
+# ---------------------------------------------------------------------------
+
+_ENV_FILE_USER = os.path.join(os.path.expanduser("~"), ".config", "lama_ole", "lama_ole.env")
+_ENV_FILE_PROJECT = os.path.join(os.getcwd(), "lama_ole.env")
+
+_TRUE_VALUES = {"1", "true", "yes", "on"}
+_FALSE_VALUES = {"0", "false", "no", "off"}
+
+
+def _parse_env_file(path):
+    values = {}
+    if not os.path.exists(path):
+        return values
+    with open(path, encoding="utf-8") as f:
+        for raw in f:
+            line = raw.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, _, value = line.partition("=")
+            key = key.strip()
+            value = value.strip()
+            if len(value) >= 2 and value[0] == value[-1] == '"':
+                value = value[1:-1]
+            values[key] = value
+    return values
+
+
+def load_env_files():
+    """Load LAMA_OLE_* defaults from config files into os.environ.
+
+    Precedence: existing shell env vars are never overwritten; the project
+    file (./lama_ole.env in the CWD) overrides the user file
+    (~/.config/lama_ole/lama_ole.env). Empty values are ignored.
+    """
+    merged = {}
+    for path in (_ENV_FILE_USER, _ENV_FILE_PROJECT):
+        merged.update(_parse_env_file(path))
+    for key, value in merged.items():
+        if value == "":
+            continue
+        os.environ.setdefault(key, value)
+
+
+def _env_str(name, default):
+    value = os.environ.get(name)
+    if not value:
+        return default
+    return value
+
+
+def _env_int(name, default):
+    value = os.environ.get(name)
+    if not value:
+        return default
+    try:
+        return int(value)
+    except ValueError:
+        print(f"Warning: ignoring invalid integer for {name}: {value!r}",
+              file=sys.stderr)
+        return default
+
+
+def _env_float(name, default):
+    value = os.environ.get(name)
+    if not value:
+        return default
+    try:
+        return float(value)
+    except ValueError:
+        print(f"Warning: ignoring invalid number for {name}: {value!r}",
+              file=sys.stderr)
+        return default
+
+
+def _env_bool(name, default):
+    value = os.environ.get(name)
+    if not value:
+        return default
+    lowered = value.lower()
+    if lowered in _TRUE_VALUES:
+        return True
+    if lowered in _FALSE_VALUES:
+        return False
+    print(f"Warning: ignoring invalid boolean for {name}: {value!r}",
+          file=sys.stderr)
+    return default
+
+
+def _env_choice(name, default, choices):
+    value = os.environ.get(name)
+    if not value:
+        return default
+    if value in choices:
+        return value
+    print(f"Warning: ignoring invalid value for {name}: {value!r} "
+          f"(must be one of {choices})", file=sys.stderr)
+    return default
+
+
+def _env_list(name):
+    value = os.environ.get(name)
+    if not value:
+        return None
+    parts = value.replace(",", " ").split()
+    return parts or None
+
+
+def build_parser():
     parser = argparse.ArgumentParser(
-        description="A CLI tool to interact with an Ollama instance."
+        description="A CLI tool to interact with an Ollama instance.",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     # Define arguments
     parser.add_argument(
@@ -46,12 +156,13 @@ def main():
     parser.add_argument(
         "--host",
         type=str,
-        default="http://localhost:11434",
+        default=_env_str("LAMA_OLE_HOST", "http://localhost:11434"),
         help="The host of the ollama instance (e.g., localhost:11434)"
     )
     parser.add_argument(
         "-m", "--model",
         type=str,
+        default=_env_str("LAMA_OLE_MODEL", None),
         help="The model name to use (e.g., gemma2:2b)"
     )
     parser.add_argument(
@@ -71,7 +182,8 @@ def main():
     )
     parser.add_argument(
         "-t", "--thinking",
-        action="store_true",
+        action=argparse.BooleanOptionalAction,
+        default=_env_bool("LAMA_OLE_THINKING", False),
         help="If set, output the model's thought process to the console"
     )
     # parameter for thoughts
@@ -109,7 +221,7 @@ def main():
     parser.add_argument(
         "--temperature",
         type=float,
-        default=0.0,
+        default=_env_float("LAMA_OLE_TEMPERATURE", 0.0),
         help="Set the sampling temperature (e.g., 0.7). Default is 0.0"
     )
 
@@ -117,7 +229,7 @@ def main():
     parser.add_argument(
         "--num_ctx",
         type=int,
-        default=None,
+        default=_env_int("LAMA_OLE_NUM_CTX", None),
         help="Set the context window (e.g., 4096, 8192, 16384, 32768, 65536, 131072, 262144, 524288, 1048576)"
     )
 
@@ -125,7 +237,7 @@ def main():
     parser.add_argument(
         "--num_gpu",
         type=int,
-        default=None,
+        default=_env_int("LAMA_OLE_NUM_GPU", None),
         help="Set the amount of GPU cores"
     )
 
@@ -133,7 +245,7 @@ def main():
     parser.add_argument(
         "--keep_alive",
         type=str,
-        default=None,
+        default=_env_str("LAMA_OLE_KEEP_ALIVE", None),
         help="Keep model in memory (e.g., '5m', '1h' or a number of seconds)"
     )
 
@@ -162,7 +274,8 @@ def main():
     # Parameter: ollama websearch
     parser.add_argument(
         "--ollama_websearch",
-        action="store_true",
+        action=argparse.BooleanOptionalAction,
+        default=_env_bool("LAMA_OLE_OLLAMA_WEBSRCH", False),
         help="Activate Ollama's built-in web search tool"
     )
 
@@ -170,14 +283,15 @@ def main():
     parser.add_argument(
         "-v", "--verbose",
         action="count",
-        default=0,
+        default=_env_int("LAMA_OLE_VERBOSE", 0),
         help="Increase verbosity level (repeat: -v, -vv, -vvv)"
     )
 
     # Parameter: chat
     parser.add_argument(
         "--chat",
-        action="store_true",
+        action=argparse.BooleanOptionalAction,
+        default=_env_bool("LAMA_OLE_CHAT", False),
         help="Start an interactive chat REPL session"
     )
 
@@ -185,7 +299,7 @@ def main():
     parser.add_argument(
         "--color",
         type=str,
-        default="auto",
+        default=_env_choice("LAMA_OLE_COLOR", "auto", ["auto", "always", "never"]),
         choices=["auto", "always", "never"],
         help="Colorize user input, thinking, and LLM output: 'auto' (TTY only), 'always', or 'never' (default: auto)"
     )
@@ -193,7 +307,8 @@ def main():
     # Parameter: safe
     parser.add_argument(
         "--safe",
-        action="store_true",
+        action=argparse.BooleanOptionalAction,
+        default=_env_bool("LAMA_OLE_SAFE", False),
         help="Enable user confirmation before dangerous tool operations"
     )
 
@@ -204,14 +319,23 @@ def main():
         action="append",
         dest="tools",
         default=None,
-        help="Python module name providing tool functions (can be repeated)"
+        help="Python module name providing tool functions (can be repeated); "
+             "appends to tools configured via LAMA_OLE_TOOL"
+    )
+
+    # Parameter: ignore-config-tools
+    parser.add_argument(
+        "--ignore-config-tools",
+        action="store_true",
+        help="Ignore tools configured via LAMA_OLE_TOOL (shell/env/config) "
+             "for this run; only --tool values are used"
     )
 
     # Parameter: max_tool_rounds
     parser.add_argument(
         "--max_tool_rounds",
         type=int,
-        default=None,
+        default=_env_int("LAMA_OLE_MAX_TOOL_ROUNDS", None),
         help="Maximum number of tool-calling rounds (default: no limit)"
     )
 
@@ -263,7 +387,9 @@ def main():
     parser.add_argument(
         "--max_tool_rounds_continuation",
         type=str,
-        default="ask",
+        default=_env_choice(
+            "LAMA_OLE_MAX_TOOL_ROUNDS_CONTINUATION", "ask", ["ask", "fallback"]
+        ),
         choices=["ask", "fallback"],
         help="Behavior when max_tool_rounds is reached: 'ask' (interactive menu) or 'fallback' (silent default)"
     )
@@ -272,6 +398,7 @@ def main():
     parser.add_argument(
         "--system_prompt",
         type=str,
+        default=_env_str("LAMA_OLE_SYSTEM_PROMPT", None),
         help="The system prompt"
     )
 
@@ -279,6 +406,7 @@ def main():
     parser.add_argument(
         "--system_prompt_file",
         type=str,
+        default=_env_str("LAMA_OLE_SYSTEM_PROMPT_FILE", None),
         help="The system prompt read from a file"
     )
 
@@ -296,7 +424,35 @@ def main():
         help="Initialize the environment and enter interactive mode"
     )
 
-    args = parser.parse_args()
+    return parser
+
+
+def _merge_tool_lists(env_tools, cli_tools):
+    """Combine env/config defaults with CLI tools, deduped, env-first.
+
+    First occurrence wins so a module listed both in config and on the CLI is
+    loaded once (load_tools() appends module info on every call).
+    """
+    merged = []
+    for item in (env_tools or []) + (cli_tools or []):
+        if item not in merged:
+            merged.append(item)
+    return merged or None
+
+
+def _resolve_env_defaults(args):
+    # --tool: merge env/config defaults with CLI values (unless ignored).
+    # --vision_model: strict override (CLI replaces env/config defaults).
+    if not args.ignore_config_tools:
+        args.tools = _merge_tool_lists(_env_list("LAMA_OLE_TOOL"), args.tools)
+    if args.vision_models is None:
+        args.vision_models = _env_list("LAMA_OLE_VISION_MODEL")
+
+
+def main():
+    load_env_files()
+    args = build_parser().parse_args()
+    _resolve_env_defaults(args)
 
     host_url = args.host
     if not host_url.startswith(('http://', 'https://')) and ':' in host_url:

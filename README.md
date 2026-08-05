@@ -378,11 +378,84 @@ __tool_env__ = {
 }
 ```
 
-## Environment Variables
+## Configuration
 
-| Variable | Default | Description |
+Most CLI flags can be given defaults via environment variables, so you don't
+have to repeat a long parameter list on every invocation.
+
+### Precedence
+
+```
+CLI flag  >  shell env var  >  ./lama_ole.env (project)  >  ~/.config/lama_ole/lama_ole.env (user)  >  built-in default
+```
+
+- Values are stored in `KEY=VALUE` files, one per line. Blank lines and lines
+  starting with `#` are ignored; optional surrounding quotes are stripped.
+- The **project file** (`./lama_ole.env` in the current working directory)
+  overrides the **user file** (`~/.config/lama_ole/lama_ole.env`).
+- Anything already set in your shell environment wins over both files.
+- An **empty value** (`LAMA_OLE_MODEL=`) means "unset" and falls back to the
+  built-in default.
+- Invalid values (e.g. `LAMA_OLE_NUM_CTX=banana`) print a warning to stderr
+  and fall back to the default.
+
+### Example
+
+```bash
+# ~/.config/lama_ole/lama_ole.env
+LAMA_OLE_CHAT=true
+LAMA_OLE_MODEL=llama3.2:3b
+LAMA_OLE_THINKING=true
+LAMA_OLE_SAFE=true
+LAMA_OLE_TOOL=tools.example_tools tools.web_tools
+LAMA_OLE_TEMPERATURE=0.2
+```
+
+```bash
+python3 lama_ole.py                                # chat, llama3.2:3b, thinking+safe, example/web tools
+python3 lama_ole.py --no-thinking                 # same, but thinking off
+python3 lama_ole.py --no-chat -i "explain X"      # one-shot query, thinking still on
+python3 lama_ole.py --tool tools.audio_tools      # config tools + audio_tools (merged)
+python3 lama_ole.py --ignore-config-tools --tool tools.audio_tools
+                                                  # audio_tools only
+```
+
+Because `--chat`, `--thinking`, `--safe` and `--ollama_websearch` accept both
+`--flag` and `--no-flag`, they can be turned on *or off* per run regardless of
+the configured default.
+
+### Environment Variables
+
+| Variable | Type | Flag |
 | :--- | :--- | :--- |
-| `LAMA_OLE_VISION_HOST` | `--host` value | Ollama host used by media understanding tools. Overrides `--host` for vision/audio model calls. |
+| `LAMA_OLE_HOST` | string | `--host` |
+| `LAMA_OLE_MODEL` | string | `-m, --model` |
+| `LAMA_OLE_TEMPERATURE` | number | `--temperature` |
+| `LAMA_OLE_NUM_CTX` | integer | `--num_ctx` |
+| `LAMA_OLE_NUM_GPU` | integer | `--num_gpu` |
+| `LAMA_OLE_KEEP_ALIVE` | string | `--keep_alive` |
+| `LAMA_OLE_CHAT` | boolean | `--chat` / `--no-chat` |
+| `LAMA_OLE_THINKING` | boolean | `-t, --thinking` / `--no-thinking` |
+| `LAMA_OLE_SAFE` | boolean | `--safe` / `--no-safe` |
+| `LAMA_OLE_OLLAMA_WEBSRCH` | boolean | `--ollama_websearch` / `--no-ollama_websearch` |
+| `LAMA_OLE_VERBOSE` | integer | `-v, --verbose` (CLI `-v` adds to it) |
+| `LAMA_OLE_COLOR` | string | `--color` |
+| `LAMA_OLE_TOOL` | space/comma-separated list | `--tool` (CLI appends, deduped) |
+| `LAMA_OLE_VISION_MODEL` | space/comma-separated list | `--vision_model` (CLI replaces) |
+| `LAMA_OLE_MAX_TOOL_ROUNDS` | integer | `--max_tool_rounds` |
+| `LAMA_OLE_MAX_TOOL_ROUNDS_CONTINUATION` | string | `--max_tool_rounds_continuation` |
+| `LAMA_OLE_SYSTEM_PROMPT` | string | `--system_prompt` |
+| `LAMA_OLE_SYSTEM_PROMPT_FILE` | string | `--system_prompt_file` |
+
+Booleans accept `1/true/yes/on` and `0/false/no/off` (case-insensitive).
+`--tool` values are merged with the configured default (config first, deduplicated)
+unless `--ignore-config-tools` is given, which uses only the CLI `--tool` values.
+`--vision_model` always replaces the configured default when given on the command
+line.
+
+Tool modules may read additional environment variables, e.g.
+`LAMA_OLE_VISION_HOST` (see `--help-tools`). These can live in the same
+config files.
 
 ## Troubleshooting
 
