@@ -19,8 +19,8 @@ lama_ole_dir = os.path.abspath(os.path.join(os.path.dirname(current_file), "..")
 if lama_ole_dir not in sys.path:
     sys.path.insert(0, lama_ole_dir)
 
-from tools.dev_tools_safer import read_file as safer_read_file
-from tools.dev_tools_safer import grep as safer_grep
+from tools_insecure_outdated_deprecated.dev_tools_safer import read_file as safer_read_file
+from tools_insecure_outdated_deprecated.dev_tools_safer import grep as safer_grep
 from tools.dev_tools_safer_readonly import read_file as readonly_read_file
 from tools.dev_tools_safer_readonly import grep as readonly_grep
 from tools.example_tools import read_file as example_read_file
@@ -293,10 +293,14 @@ class TestDefensiveLayerEntropy:
         import string
 
         random.seed(42)
-        data = "".join(
+        text = "".join(
             random.choice(string.ascii_letters + string.digits + string.punctuation)
             for _ in range(5000)
         )
+        # Printable-only random text passes the current thresholds (150 unique
+        # bytes, safe-ratio 0.85). Interleave null bytes so the safe-byte
+        # ratio drops below 0.85 and the data is genuinely suspicious.
+        data = "".join(c if i % 5 else "\x00" for i, c in enumerate(text))
         result = {"status": "success", "data": data}
         _entropy_check_tool_result(result, "test_tool")
         assert isinstance(result["data"], str)

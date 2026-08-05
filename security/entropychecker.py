@@ -40,6 +40,13 @@ _SAFE_BYTE_SET.update({9, 10, 13})    # tab, newline, carriage return
 _UTF8_CONTINUATION_MIN = 128
 _UTF8_CONTINUATION_MAX = 191
 
+# Minimum number of bytes before the compression test is meaningful.
+# zlib emits a fixed-size header/checksum, so very short inputs yield a ratio
+# > 1.0 regardless of content and would be flagged as random even though they
+# are plain text. Below this size the compression test is inconclusive and is
+# skipped; the pattern check remains active for short inputs.
+_MIN_COMPRESSION_BYTES = 100
+
 
 # ============================================================================
 # Data Classes
@@ -234,6 +241,24 @@ def _analyze_window_utf8(window: bytes) -> dict:
                     unique.add(cb)
                 safe_count += length
                 i += length
+            elif i + length > n and all(
+                _UTF8_CONTINUATION_MIN <= window[i + k] <= _UTF8_CONTINUATION_MAX
+                for k in range(1, n - i)
+            ):
+                # A valid lead byte whose continuation bytes are cut off by
+                # the end of the window. This happens when a multi-byte UTF-8
+                # character is split across feed() chunks or straddles the
+                # sliding-window boundary; the remaining bytes arrive with the
+                # next feed. Treat the incomplete trailing bytes as pending
+                # (safe) so a split UTF-8 character is not a false positive.
+                # If a present continuation byte is invalid, the sequence is
+                # genuinely broken and falls through to the control branch.
+                for k in range(1, n - i):
+                    cb = window[i + k]
+                    byte_dist[cb] = byte_dist.get(cb, 0) + 1
+                    unique.add(cb)
+                safe_count += n - i
+                i = n
             else:
                 i += 1
 
@@ -272,7 +297,13 @@ def _check_compression(data: bytes, threshold: float) -> tuple[bool, str]:
     """
     if not data:
         return False, ""
-    
+
+    # Short inputs cannot be meaningfully compression-tested: zlib's fixed
+    # header makes tiny text inflate (ratio > 1.0), which would be a false
+    # positive. Skip the test; the pattern check still applies.
+    if len(data) < _MIN_COMPRESSION_BYTES:
+        return False, ""
+
     try:
         compressed = zlib.compress(data)
         ratio = len(compressed) / len(data)
@@ -336,7 +367,7 @@ class EntropyChecker:
         Args:
             window_size: Sliding window size for pattern analysis (default: 1024)
             safe_ratio_threshold: Minimum safe byte ratio to pass (default: 0.85)
-            unique_byte_threshold: Max unique bytes in window before flagging (default: 64)
+            unique_byte_threshold: Max unique bytes in window before flagging (default: 150)
             zip_size_limit: Bytes accumulated before compression test activates (default: 64 KiB)
             zip_ratio_threshold: Maximum acceptable compression ratio (default: 0.95)
         """
@@ -539,7 +570,7 @@ class EntropyChecker:
 def check_entropy(data: bytes | str, 
                   window_size: int = 1024,
                   safe_ratio_threshold: float = 0.85,
-                  unique_byte_threshold: int = 64,
+                  unique_byte_threshold: int = 150,
                   zip_size_limit: int = 65536,
                   zip_ratio_threshold: float = 0.95) -> bool:
     """Quick entropy check for one-shot usage.
@@ -551,7 +582,7 @@ def check_entropy(data: bytes | str,
         data: Input data as bytes or string
         window_size: Sliding window size (default: 1024)
         safe_ratio_threshold: Minimum safe byte ratio (default: 0.85)
-        unique_byte_threshold: Max unique bytes (default: 64)
+        unique_byte_threshold: Max unique bytes (default: 150)
         zip_size_limit: Compression test trigger size (default: 64 KiB)
         zip_ratio_threshold: Maximum compression ratio (default: 0.95)
         

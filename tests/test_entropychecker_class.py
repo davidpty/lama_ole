@@ -28,7 +28,7 @@ class TestEntropyCheckerInit:
         
         assert checker.window_size == 1024, "Default window size should be 1024"
         assert checker.safe_ratio_threshold == 0.85, "Default safe ratio threshold should be 0.85"
-        assert checker.unique_byte_threshold == 64, "Default unique byte threshold should be 64"
+        assert checker.unique_byte_threshold == 150, "Default unique byte threshold should be 150"
         assert checker.zip_size_limit == 65536, "Default zip size limit should be 65536 (64 KiB)"
         assert checker.zip_ratio_threshold == 0.95, "Default zip ratio threshold should be 0.95"
 
@@ -156,6 +156,59 @@ if __name__ == "__main__":
         # Total bytes should be sum of both feeds
         expected_bytes = len("Hello ".encode('utf-8')) + len("World".encode('utf-8'))
         assert result2.bytes_processed == expected_bytes
+
+    def test_short_text_passes_with_tiny_zip_limit(self):
+        """Short strings below a meaningful zip size must not be flagged.
+
+        zlib inflates tiny inputs (fixed header), so the compression test is
+        skipped for short strings; the pattern check still applies and short
+        valid text must pass.
+        """
+        checker = EntropyChecker(zip_size_limit=10)
+        result = checker.feed("Hello World!")
+
+        assert not result.is_suspicious, \
+            f"Short text with tiny zip limit should pass, got: {result.reason}"
+
+    def test_utf8_character_split_across_feed_calls(self):
+        """A multi-byte UTF-8 character split across feed calls must not be a
+        false positive.
+
+        When a byte stream is delivered in chunks, a character boundary can
+        fall inside a multi-byte sequence. The trailing incomplete sequence
+        must be treated as pending, not as binary data.
+        """
+        # 'é' = U+00E9 = b'\xc3\xa9', split between two feeds
+        checker = EntropyChecker()
+        result1 = checker.feed(b"caf\xc3")
+        assert not result1.is_suspicious, \
+            f"Feed ending mid-character should not be suspicious: {result1.reason}"
+
+        result2 = checker.feed(b"\xa9 \xf0\x9f")
+        assert not result2.is_suspicious, \
+            f"Continuation feed should not be suspicious: {result2.reason}"
+
+        result3 = checker.feed(b"\x98\x80 done")
+        assert not result3.is_suspicious, \
+            f"Completed stream should not be suspicious: {result3.reason}"
+        assert checker.get_output() == "café 😀 done"
+
+    def test_many_unicode_characters_pass(self):
+        """Text with many distinct Unicode characters must pass.
+
+        The default unique-byte threshold (150) must accommodate real text
+        whose window contains many distinct UTF-8 byte values (CJK, emoji),
+        otherwise legitimate files would be flagged as random.
+        """
+        # 200 distinct CJK characters (3 UTF-8 bytes each) + emoji
+        text = "".join(chr(0x4E00 + i) for i in range(200)) + " ".join(
+            ["😀", "🌍", "🚀", "🎉"]
+        ) * 20
+        checker = EntropyChecker()
+        result = checker.feed(text)
+
+        assert not result.is_suspicious, \
+            f"Unicode-heavy text should pass, got: {result.reason}"
 
 
 class TestFeedInvalidInput:

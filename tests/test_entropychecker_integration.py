@@ -16,7 +16,8 @@ lama_ole_dir = os.path.abspath(os.path.join(os.path.dirname(current_file), "..")
 if lama_ole_dir not in sys.path:
     sys.path.insert(0, lama_ole_dir)
 
-from tools.dev_tools import read_file, grep
+from tools_insecure_outdated_deprecated.dev_tools import read_file, grep
+from security.entropychecker import EntropyChecker
 
 
 class TestReadFileIntegration:
@@ -244,7 +245,6 @@ class TestEntropyCheckerEdgeCases:
 
     def test_empty_input(self):
         """Test handling of empty input."""
-        from lama_ole.security.entropychecker import EntropyChecker
         
         checker = EntropyChecker()
         result = checker.feed("")
@@ -253,7 +253,6 @@ class TestEntropyCheckerEdgeCases:
 
     def test_single_byte_safe(self):
         """Test single safe byte."""
-        from lama_ole.security.entropychecker import EntropyChecker
         
         checker = EntropyChecker()
         result = checker.feed(b"A")
@@ -262,7 +261,6 @@ class TestEntropyCheckerEdgeCases:
 
     def test_single_byte_unsafe(self):
         """Test single unsafe byte."""
-        from lama_ole.security.entropychecker import EntropyChecker
         
         checker = EntropyChecker()
         result = checker.feed(b"\x00")
@@ -274,7 +272,6 @@ class TestEntropyCheckerEdgeCases:
 
     def test_very_long_input(self):
         """Test handling of very long input."""
-        from lama_ole.security.entropychecker import EntropyChecker
         
         checker = EntropyChecker(zip_size_limit=1000)  # Small limit for testing
         
@@ -289,7 +286,6 @@ class TestEntropyCheckerEdgeCases:
 
     def test_unicode_edge_cases(self):
         """Test various Unicode edge cases."""
-        from lama_ole.security.entropychecker import EntropyChecker
         
         checker = EntropyChecker()
         
@@ -303,7 +299,6 @@ class TestEntropyCheckerEdgeCases:
 
     def test_rapid_reset(self):
         """Test rapid reset during feeding."""
-        from lama_ole.security.entropychecker import EntropyChecker
         
         checker = EntropyChecker()
         
@@ -316,7 +311,6 @@ class TestEntropyCheckerEdgeCases:
 
     def test_concurrent_feeding(self):
         """Test that concurrent feeding doesn't cause issues (single-threaded)."""
-        from lama_ole.security.entropychecker import EntropyChecker
         
         # This is a sanity check - entropy checker is not thread-safe
         checker = EntropyChecker()
@@ -327,7 +321,6 @@ class TestEntropyCheckerEdgeCases:
 
     def test_strict_thresholds(self):
         """Test with very strict thresholds."""
-        from lama_ole.security.entropychecker import EntropyChecker
         
         checker = EntropyChecker(
             safe_ratio_threshold=0.99,  # Very strict
@@ -341,7 +334,6 @@ class TestEntropyCheckerEdgeCases:
 
     def test_lenient_thresholds(self):
         """Test with very lenient thresholds."""
-        from lama_ole.security.entropychecker import EntropyChecker
         
         checker = EntropyChecker(
             safe_ratio_threshold=0.5,   # Very lenient
@@ -355,7 +347,6 @@ class TestEntropyCheckerEdgeCases:
 
     def test_zero_window_size(self):
         """Test behavior with zero window size (edge case)."""
-        from lama_ole.security.entropychecker import EntropyChecker
         
         # This might cause division by zero or other issues
         # Should handle gracefully
@@ -370,7 +361,6 @@ class TestEntropyCheckerEdgeCases:
 
     def test_very_small_zip_limit(self):
         """Test with very small zip size limit."""
-        from lama_ole.security.entropychecker import EntropyChecker
         
         checker = EntropyChecker(zip_size_limit=10)  # Tiny limit
         

@@ -292,6 +292,31 @@ class TestCheckCompression:
         # zlib might handle it differently, but should not crash
         assert isinstance(is_suspicious, bool), "Should return boolean"
 
+    def test_short_strings_not_flagged_by_compression(self):
+        """Short strings cannot be meaningfully zipped.
+
+        zlib adds a fixed-size header, so tiny inputs inflate (ratio > 1.0)
+        even when they are plain text. The compression test must skip data
+        below the minimum meaningful size instead of raising a false positive.
+        """
+        for short in (b"A", b"hi", b"hello", b"Hello World!", "short text".encode()):
+            is_suspicious, reason = _check_compression(short, threshold=0.95)
+            assert is_suspicious == False, \
+                f"Short text {short!r} must not be flagged: {reason}"
+            assert reason == "", f"Short text {short!r} should have empty reason"
+
+    def test_short_random_bytes_skipped_by_compression(self):
+        """Very short random data is skipped by the compression test.
+
+        The pattern analysis (not the compression test) is responsible for
+        catching small binary inputs, so the compression helper must not
+        crash or misfire on them.
+        """
+        import os
+        is_suspicious, reason = _check_compression(os.urandom(16), threshold=0.95)
+        assert is_suspicious == False, \
+            f"Short random data should be skipped by compression, got: {reason}"
+
     def test_very_large_data(self):
         """Test with very large data to ensure no memory issues."""
         import os
