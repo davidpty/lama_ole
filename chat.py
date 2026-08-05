@@ -1,6 +1,7 @@
 import json
 import os
 import sys
+import time
 from dataclasses import dataclass, field
 
 try:
@@ -8,7 +9,11 @@ try:
 except ImportError:
     readline = None
 
-from tool_base import Tool, run_with_tools
+from tool_base import (
+    Tool,
+    run_with_tools,
+    StateManager,
+)
 
 from color_util import C_PROMPT, color_mode_enabled, colored
 
@@ -34,7 +39,37 @@ class ChatState:
     max_tool_rounds: int = None
     max_tool_rounds_continuation: str = "ask"
     ollama_websearch: bool = False
+    ndjson_log_path: str = None
+    ndjson_log_file_handle: object = None
     color: object = "auto"
+    state_manager: StateManager = field(default_factory=StateManager)
+
+    def __post_init__(self):
+        if self.ndjson_log_path and self.ndjson_log_file_handle is None:
+            self.ndjson_log_file_handle = open(
+                self.ndjson_log_path, "w", encoding="utf-8"
+            )
+
+    def log_ndjson(self, message=None):
+        if not self.ndjson_log_file_handle:
+            return
+        try:
+            data = {
+                "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
+                "model": self.model,
+                "message": message,
+            }
+            self.ndjson_log_file_handle.write(
+                json.dumps(data, ensure_ascii=False) + "\n"
+            )
+            self.ndjson_log_file_handle.flush()
+        except Exception as e:
+            print(f"Error writing ndjson log: {e}", file=sys.stderr)
+
+    def close(self):
+        if self.ndjson_log_file_handle is not None:
+            self.ndjson_log_file_handle.close()
+            self.ndjson_log_file_handle = None
 
 
 def run_chat(state: ChatState):
@@ -65,7 +100,9 @@ def run_chat(state: ChatState):
                     break
                 continue
 
-            state.messages.append({"role": "user", "content": stripped})
+            user_msg = {"role": "user", "content": stripped}
+            state.messages.append(user_msg)
+            state.log_ndjson(user_msg)
 
             if state.chatinput_file_handle:
                 from tool_base import _write_input
@@ -93,14 +130,17 @@ def run_chat(state: ChatState):
                 max_tool_rounds_continuation=state.max_tool_rounds_continuation,
                 ollama_websearch=state.ollama_websearch,
                 color=state.color,
+                ndjson_log_file_handle=state.ndjson_log_file_handle,
             )
         except KeyboardInterrupt:
             print("\nInterrupted.")
+            state.state_manager.reset()
             # Rollback messages added during this turn (user message or assistant/tool messages)
             while len(state.messages) > messages_before:
                 state.messages.pop()
         except Exception as e:
             print(f"Error: {e}", file=sys.stderr)
+            state.state_manager.reset()
             # Rollback messages added during this turn
             while len(state.messages) > messages_before:
                 state.messages.pop()
@@ -194,7 +234,9 @@ def _cmd_feed(path: str, state: ChatState):
         return
 
     content = raw_content.decode("utf-8", errors="replace")
-    state.messages.append({"role": "user", "content": content})
+    user_msg = {"role": "user", "content": content}
+    state.messages.append(user_msg)
+    state.log_ndjson(user_msg)
     print(f"Loaded {len(content)} characters from {path}")
     try:
         run_with_tools(
@@ -215,6 +257,7 @@ def _cmd_feed(path: str, state: ChatState):
             max_tool_rounds_continuation=state.max_tool_rounds_continuation,
             ollama_websearch=state.ollama_websearch,
             color=state.color,
+            ndjson_log_file_handle=state.ndjson_log_file_handle,
         )
     except Exception as e:
         print(f"Error: {e}", file=sys.stderr)

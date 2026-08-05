@@ -40,7 +40,7 @@ def main():
     parser.add_argument(
         "-V", "--version",
         action="version",
-        version="0.0.36"
+        version="0.0.37"
     )
     # Define arguments
     parser.add_argument(
@@ -98,6 +98,12 @@ def main():
         "--chatinputlog",
         type=str,
         help="Path to a log file where all user input (stdin, --input/--inputfile, and chat REPL) should be logged with timestamps"
+    )
+    # Parameter: ndjson conversation log
+    parser.add_argument(
+        "--logndjson",
+        type=str,
+        help="Path to a newline-delimited JSON log file where every conversation message is appended as its own line"
     )
     # Parameter: temperature
     parser.add_argument(
@@ -474,6 +480,14 @@ def main():
             sys.exit(1)
         chatinput_file_handle = open(args.chatinputlog, "w", encoding="utf-8")
 
+    # Open the ndjson conversation log if provided
+    ndjson_log_file_handle = None
+    if args.logndjson:
+        if os.path.exists(args.logndjson):
+            print(f"Error: The file '{args.logndjson}' already exists.", file=sys.stderr)
+            sys.exit(1)
+        ndjson_log_file_handle = open(args.logndjson, "w", encoding="utf-8")
+
     try:
         options = {
             "temperature": args.temperature,
@@ -505,9 +519,13 @@ def main():
                 max_tool_rounds=args.max_tool_rounds,
                 max_tool_rounds_continuation=args.max_tool_rounds_continuation,
                 ollama_websearch=args.ollama_websearch,
+                ndjson_log_path=args.logndjson,
+                ndjson_log_file_handle=ndjson_log_file_handle,
             )
             if content.strip():
-                state.messages.append({"role": "user", "content": content})
+                user_msg = {"role": "user", "content": content}
+                state.messages.append(user_msg)
+                state.log_ndjson(user_msg)
                 run_with_tools(
                     client=client,
                     model=args.model,
@@ -528,11 +546,16 @@ def main():
                     max_tool_rounds=args.max_tool_rounds,
                     max_tool_rounds_continuation=args.max_tool_rounds_continuation,
                     ollama_websearch=args.ollama_websearch,
+                    ndjson_log_file_handle=ndjson_log_file_handle,
                     color=args.color,
                 )
             run_chat(state)
         else:
+            from tool_base.logging import _log_ndjson_message
+
             messages = [{"role": "user", "content": content}]
+            if ndjson_log_file_handle:
+                _log_ndjson_message(ndjson_log_file_handle, args.model, messages[0])
             run_with_tools(
                 client=client,
                 model=args.model,
@@ -553,6 +576,7 @@ def main():
                 max_tool_rounds=args.max_tool_rounds,
                 max_tool_rounds_continuation=args.max_tool_rounds_continuation,
                 ollama_websearch=args.ollama_websearch,
+                ndjson_log_file_handle=ndjson_log_file_handle,
                 color=args.color,
             )
 
@@ -570,6 +594,8 @@ def main():
             toolcall_file_handle.close()
         if chatinput_file_handle:
             chatinput_file_handle.close()
+        if ndjson_log_file_handle:
+            ndjson_log_file_handle.close()
 
 # ---------------------------------------------------------------------------
 # Transfer implementation

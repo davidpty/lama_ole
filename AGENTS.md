@@ -10,7 +10,16 @@
 lama_ole/
 ├── __init__.py              # empty package marker
 ├── lama_ole.py              # CLI entry point — argparse setup, orchestration, model transfer
-├── tool_base.py             # Core: @tool decorator, Tool registry, run_with_tools loop, safety prompt
+├── tool_base/               # Core engine package: @tool decorator, Tool registry, run_with_tools loop, safety prompt
+│   ├── __init__.py          # Public re-exports (run_with_tools, tool, StateManager, StateLogger, ...)
+│   ├── constants.py         # SAFETY_SYSTEM_PROMPT, JSON_RETURN_PROMPT, DANGEROUS_TOOLS
+│   ├── config.py            # Vision models + Ollama host configuration
+│   ├── engine.py            # run_with_tools loop + to_ollama_tools conversion
+│   ├── logging.py           # StateLogger + granular timestamp helpers
+│   ├── loop_states.py       # ExecutionState enum + StateManager
+│   ├── models.py            # Tool, ToolModuleInfo dataclasses
+│   ├── registry.py          # @tool decorator, tool loading
+│   └── utils.py             # _infer_params, create_uuid_15
 ├── chat.py                  # ChatState + REPL with slash commands (/feed, /clear, /model, etc.)
 ├── README.md                # Full documentation
 │
@@ -34,7 +43,7 @@ lama_ole/
 | File | Role |
 |------|------|
 | **`lama_ole.py`** | CLI entry point. Parses args, creates Ollama `Client`, handles model listing/transfer/blob-server as standalone modes, then delegates to either `run_with_tools()` (one-shot) or `ChatState` + `run_chat()` (REPL). Contains the full model transfer logic (`FilesystemBlobSource`, `HttpBlobSource`). |
-| **`tool_base.py`** | Core engine. Defines `@tool` decorator that auto-infers JSON Schema from type annotations, registers tools in `_TOOL_REGISTRY`. `run_with_tools()` is the main loop: prepends safety system prompt, streams chat responses, handles tool calls (invoke → wrap result with `[data from ...]` markers → feed back to model), supports safe-mode confirmation for dangerous tools. |
+| **`tool_base/`** | Core engine package. Defines `@tool` decorator that auto-infers JSON Schema from type annotations, registers tools in a registry (`registry.py`). `run_with_tools()` (`engine.py`) is the main loop: prepends safety system prompt, streams chat responses, handles tool calls (invoke → wrap result with `[data from ...]` markers → feed back to model), supports safe-mode confirmation for dangerous tools. `loop_states.py` provides `ExecutionState`/`StateManager` for state tracking and robust Ctrl-C handling. `logging.py` provides the centralized `StateLogger` used for granular timestamps. |
 | **`chat.py`** | Interactive REPL (`ChatState`). Manages multi-turn conversation history, slash commands (`/feed`, `/clear`, `/model`, `/save`, `/load`, `/tools`, `/context`, `/help`, `/exit`), and delegates each turn to `run_with_tools()`. |
 | **`tools/*.py`** | Tool modules. Each exports functions decorated with `@tool`. Tools can declare env vars via module-level `__tool_env__` dict (shown by `--help-tools`). |
 
@@ -51,7 +60,7 @@ lama_ole/
 
 ### Quick Navigation Tips
 
-- To understand how tools work: read `tool_base.py` → `@tool`, `_infer_params`, `run_with_tools`.
+- To understand how tools work: read `tool_base/` → `registry.py` (`@tool`), `utils.py` (`_infer_params`), `engine.py` (`run_with_tools`).
 - To understand the CLI flow: read `lama_ole.py` top-to-bottom.
 - To add a new tool: create a module in `tools/`, decorate functions with `@tool`, load via `--tool mymodule`.
 - Chat REPL logic is isolated in `chat.py` — `ChatState` holds messages, tools, options; `run_chat()` drives the loop.

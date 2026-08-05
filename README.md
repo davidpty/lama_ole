@@ -14,6 +14,8 @@ flexible input/output options.
 - **Output Redirection** — Save generated content to a log file (`-o`, `--outlog`).
 - **Tool Call Logging** — Log tool calls and results to a separate file (`--toolcalllog`).
 - **Chat Input Logging** — Log chat REPL input to a separate file (`--chatinputlog`).
+- **NDJSON Logging** — Log every conversation message (timestamp, model,
+  message) as its own NDJSON line (`--logndjson`).
 - **Flexible Input** — Direct string (`-i`), file (`-f`), or stdin (`--stdin`).
 - **Chat Mode** — Multi-turn REPL with slash commands (`--chat`).
 - **Tool Calling** — Load Python modules as callable tools (`--tool`).
@@ -286,6 +288,7 @@ In chat mode (`--chat`), lines starting with `/` are commands:
 | `-o, --outlog PATH` | Log main output to file | |
 | `--toolcalllog PATH` | Log tool calls and results to a separate file | |
 | `--chatinputlog PATH` | Log chat REPL input to a separate file | |
+| `--logndjson PATH` | Log each conversation message as an NDJSON line | |
 | `-t, --thinking` | Show model's thought process | |
 | `--thoughtlog PATH` | Log thoughts to file (independent of `-t`) | |
 | `--temperature FLOAT` | Sampling temperature | `0.0` |
