@@ -335,6 +335,7 @@ Tab completion is enabled in interactive mode: commands, `/tools`, `/skill` and
 | `--system_prompt_file PATH` | Read system prompt from a file | |
 | `--no_safety_system_prompt` | Disable safety system prompt; enables potential takeover when tools are used (placed after any user-provided system prompt) | |
 | `--debug` | Initialize the environment and enter an interactive Python REPL for debugging | |
+| `--color MODE` | Colorize user input, thinking, and LLM output: `auto` (TTY only), `always`, `never`/`none` | `auto` |
 | `-v` to `-vvv` | Verbosity level (repeat for more) | silent |
 
 ### Verbosity Levels
