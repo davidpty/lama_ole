@@ -1,10 +1,25 @@
 from enum import Enum, auto
 
+
 class ExecutionState(Enum):
     IDLE = auto()
     THINKING = auto()
     OUTPUTTING = auto()
     TOOLCALLING = auto()
+
+
+class ExecutionInterrupted(KeyboardInterrupt):
+    """KeyboardInterrupt raised while an execution state was active.
+
+    Carries the ExecutionState the loop was in when the interrupt arrived so
+    the caller (the REPL) can report which phase was interrupted. Raised by
+    run_with_tools() after cleanup; it is a KeyboardInterrupt subclass, so
+    existing handlers keep working.
+    """
+
+    def __init__(self, state=None):
+        super().__init__()
+        self.state = state
 
 
 class StateManager:

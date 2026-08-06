@@ -98,11 +98,13 @@ def run_with_tools(
     ollama_websearch: bool = False,
     ndjson_log_file_handle=None,
     color: str = "auto",
+    state_manager=None,
 ):
-    from .loop_states import ExecutionState, StateManager
+    from .loop_states import ExecutionState, StateManager, ExecutionInterrupted
     from .logging import StateLogger
 
-    state_manager = StateManager()
+    if state_manager is None:
+        state_manager = StateManager()
     use_color = color_mode_enabled(color)
     tool_rounds = 0
     think_state = False
@@ -166,6 +168,7 @@ def run_with_tools(
                     "Reached maximum number of tool-calling rounds.",
                     file=sys.stderr,
                 )
+                state_manager.reset()
                 break
             elif max_tool_rounds_continuation == "ask":
                 print(
@@ -182,6 +185,10 @@ def run_with_tools(
                     choice = sys.stdin.readline().strip()
                 except EOFError:
                     choice = "3"
+                except KeyboardInterrupt:
+                    state_manager.reset()
+                    print("\nInterrupted.", file=sys.stderr)
+                    break
                 if choice == "1":
                     print(
                         "Enter new max round limit: ",
@@ -196,14 +203,21 @@ def run_with_tools(
                         )
                     except (ValueError, EOFError):
                         print("Invalid input. Falling back.", file=sys.stderr)
+                        state_manager.reset()
+                        break
+                    except KeyboardInterrupt:
+                        state_manager.reset()
+                        print("\nInterrupted.", file=sys.stderr)
                         break
                 elif choice == "2":
                     max_tool_rounds = None
                     print("Unlimited rounds set.", file=sys.stderr)
                 elif choice == "4":
+                    state_manager.reset()
                     print("Exiting.", file=sys.stderr)
                     return final_response
                 else:
+                    state_manager.reset()
                     break
                 continue
 
@@ -275,10 +289,11 @@ def run_with_tools(
                 if stream is not None and hasattr(stream, "close"):
                     stream.close()
         except KeyboardInterrupt:
+            interrupted_state = state_manager.current_state
             state_manager.reset()
             think_state = False
             print("\nInterrupted during model response. Returning to prompt.", file=sys.stderr)
-            raise
+            raise ExecutionInterrupted(interrupted_state)
 
         if think_state:
             think_state = False
@@ -352,6 +367,8 @@ def run_with_tools(
                                 answer = sys.stdin.readline().strip().lower()
                             except EOFError:
                                 answer = 'n'
+                            except KeyboardInterrupt:
+                                answer = 'n'
                             should_run = answer == 'y'
 
                         if should_run:
@@ -368,9 +385,10 @@ def run_with_tools(
                     else:
                         result = {"status": "error", "message": f"unknown tool '{tool_name}'"}
                 except KeyboardInterrupt:
+                    interrupted_state = state_manager.current_state
                     state_manager.reset()
                     print("\nInterrupted during tool execution. Returning to prompt.", file=sys.stderr)
-                    raise
+                    raise ExecutionInterrupted(interrupted_state)
 
                 # Defensive entropy check (opt-in): catches future tools that
                 # bypass the per-tool integration.

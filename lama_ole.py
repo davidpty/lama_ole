@@ -150,7 +150,7 @@ def build_parser():
     parser.add_argument(
         "-V", "--version",
         action="version",
-        version="0.0.40"
+        version="0.0.41"
     )
     # Define arguments
     parser.add_argument(
@@ -736,32 +736,43 @@ def main():
             )
             if content.strip():
                 user_msg = {"role": "user", "content": content}
+                messages_before = len(state.messages)
                 state.messages.append(user_msg)
                 state.log_ndjson(user_msg)
-                run_with_tools(
-                    client=client,
-                    model=args.model,
-                    messages=state.messages,
-                    loaded_tools=loaded_tools,
-                    ollama_tools=ollama_tools,
-                    options=options,
-                    keep_alive=args.keep_alive,
-                    show_thinking=args.thinking,
-                    no_safety_system_prompt= args.no_safety_system_prompt,
-                    system_prompt= system_prompt,
-                    skill_text= skill_text,
-                    verbose=args.verbose,
-                    safe=args.safe,
-                    thought_file_handle=thought_file_handle,
-                    output_file_handle=output_file_handle,
-                    toolcall_file_handle=toolcall_file_handle,
-                    chatinput_file_handle=chatinput_file_handle,
-                    max_tool_rounds=args.max_tool_rounds,
-                    max_tool_rounds_continuation=args.max_tool_rounds_continuation,
-                    ollama_websearch=args.ollama_websearch,
-                    ndjson_log_file_handle=ndjson_log_file_handle,
-                    color=args.color,
-                )
+                try:
+                    run_with_tools(
+                        client=client,
+                        model=args.model,
+                        messages=state.messages,
+                        loaded_tools=loaded_tools,
+                        ollama_tools=ollama_tools,
+                        options=options,
+                        keep_alive=args.keep_alive,
+                        show_thinking=args.thinking,
+                        no_safety_system_prompt= args.no_safety_system_prompt,
+                        system_prompt= system_prompt,
+                        skill_text= skill_text,
+                        verbose=args.verbose,
+                        safe=args.safe,
+                        thought_file_handle=thought_file_handle,
+                        output_file_handle=output_file_handle,
+                        toolcall_file_handle=toolcall_file_handle,
+                        chatinput_file_handle=chatinput_file_handle,
+                        max_tool_rounds=args.max_tool_rounds,
+                        max_tool_rounds_continuation=args.max_tool_rounds_continuation,
+                        ollama_websearch=args.ollama_websearch,
+                        ndjson_log_file_handle=ndjson_log_file_handle,
+                        color=args.color,
+                        state_manager=state.state_manager,
+                    )
+                except KeyboardInterrupt:
+                    print(
+                        "\nInterrupted during initial response. Entering chat mode.",
+                        file=sys.stderr,
+                    )
+                    state.state_manager.reset()
+                    while len(state.messages) > messages_before:
+                        state.messages.pop()
             run_chat(state)
         else:
             from tool_base.logging import _log_ndjson_message

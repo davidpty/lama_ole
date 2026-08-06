@@ -14,6 +14,8 @@ from tool_base import (
     Tool,
     run_with_tools,
     StateManager,
+    ExecutionState,
+    ExecutionInterrupted,
     to_ollama_tools,
     load_tools,
     get_available_toolsets,
@@ -229,23 +231,16 @@ def run_chat(state: ChatState):
     prompt = colored(">>> ", C_PROMPT, use_color)
 
     while True:
+        # Snapshot before reading input so an interrupt either at the prompt or
+        # during the turn only rolls back what this iteration added.
+        messages_before = len(state.messages)
         try:
             line = input(prompt)
-        except EOFError:
-            print()
-            break
-        except KeyboardInterrupt:
-            print("\nInterrupted.")
-            continue
 
-        stripped = line.strip()
-        if not stripped:
-            continue
+            stripped = line.strip()
+            if not stripped:
+                continue
 
-        # Track messages before this turn to allow rollback on error/interrupt
-        messages_before = len(state.messages)
-
-        try:
             if stripped.startswith("/"):
                 if _handle_command(stripped, state):
                     break
@@ -283,13 +278,28 @@ def run_chat(state: ChatState):
                 ollama_websearch=state.ollama_websearch,
                 color=state.color,
                 ndjson_log_file_handle=state.ndjson_log_file_handle,
+                state_manager=state.state_manager,
             )
-        except KeyboardInterrupt:
-            print("\nInterrupted.")
-            state.state_manager.reset()
-            # Rollback messages added during this turn (user message or assistant/tool messages)
-            while len(state.messages) > messages_before:
-                state.messages.pop()
+        except EOFError:
+            print()
+            break
+        except KeyboardInterrupt as e:
+            # A second Ctrl-C while we clean up must not kill the REPL.
+            try:
+                if isinstance(e, ExecutionInterrupted) and e.state not in (None, ExecutionState.IDLE):
+                    print(
+                        f"\nInterrupted during {e.state.name.lower()}. Returning to prompt.",
+                        file=sys.stderr,
+                    )
+                else:
+                    print("\nInterrupted.")
+                state.state_manager.reset()
+                # Rollback messages added during this turn (user message or
+                # assistant/tool messages).
+                while len(state.messages) > messages_before:
+                    state.messages.pop()
+            except KeyboardInterrupt:
+                pass
         except Exception as e:
             print(f"Error: {e}", file=sys.stderr)
             state.state_manager.reset()
@@ -400,6 +410,7 @@ def _cmd_feed(path: str, state: ChatState):
 
     content = raw_content.decode("utf-8", errors="replace")
     user_msg = {"role": "user", "content": content}
+    messages_before = len(state.messages)
     state.messages.append(user_msg)
     state.log_ndjson(user_msg)
     print(f"Loaded {len(content)} characters from {path}")
@@ -420,15 +431,23 @@ def _cmd_feed(path: str, state: ChatState):
             safe=state.safe,
             thought_file_handle=state.thought_file_handle,
             output_file_handle=state.output_file_handle,
+            toolcall_file_handle=state.toolcall_file_handle,
+            chatinput_file_handle=state.chatinput_file_handle,
             max_tool_rounds=state.max_tool_rounds,
             max_tool_rounds_continuation=state.max_tool_rounds_continuation,
             ollama_websearch=state.ollama_websearch,
             color=state.color,
             ndjson_log_file_handle=state.ndjson_log_file_handle,
+            state_manager=state.state_manager,
         )
+    except KeyboardInterrupt:
+        while len(state.messages) > messages_before:
+            state.messages.pop()
+        raise
     except Exception as e:
         print(f"Error: {e}", file=sys.stderr)
-        state.messages.pop()
+        while len(state.messages) > messages_before:
+            state.messages.pop()
 
 
 def _cmd_save(path: str, state: ChatState):
