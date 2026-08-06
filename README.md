@@ -267,12 +267,24 @@ In chat mode (`--chat`), lines starting with `/` are commands:
 | `/feed <path>` | Read a file and send its content as a message |
 | `/clear` | Clear the conversation history |
 | `/model <name>` | Switch to a different model |
-| `/save <path>` | Save the conversation to a JSON file |
-| `/load <path>` | Load a conversation from a JSON file |
-| `/tools` | List loaded tools |
+| `/save <path>` | Save the conversation to a JSON file (model, messages, active skill and loaded toolsets) |
+| `/load <path>` | Load a conversation from a JSON file (restores the active skill and re-loads toolsets) |
+| `/tools loaded` | List loaded toolsets and their tools |
+| `/tools available` | List toolsets available to load |
+| `/tools show <toolset>` | List all tools of one toolset |
+| `/tools all` | List all tools of all toolsets |
+| `/tools load <toolset> [<toolset> ...]` | Load one or more toolsets at runtime |
+| `/tools unload <toolset> [<toolset> ...]` | Unload one or more toolsets at runtime |
+| `/skill list` | List available skills |
+| `/skill load <name-or-path> [<name-or-path> ...]` | Load one or more skills into the system role |
+| `/skill unload` | Unload the active skill |
+| `/skill show` | Show the active skill |
 | `/context` | Show message count and total character count |
 | `/help` | Show this help message |
 | `/exit`, `/quit` | Exit the chat |
+
+Bare `/tools` prints the tool subcommand usage. Bare `/skill` prints the skill
+subcommand usage.
 
 ## Configuration Options
 
@@ -297,6 +309,7 @@ In chat mode (`--chat`), lines starting with `/` are commands:
 | `--keep_alive DURATION` | Keep model in memory (`5m`, `1h`) | (Ollama default) |
 | `--chat` | Start interactive chat REPL | |
 | `--tool MODULE` | Load tool module (repeatable) | |
+| `--skill PATH` | Load skill text into system role (repeatable; files concatenated) | |
 | `--vision_model MODEL` | Vision model for media tools (repeatable) | (auto-detect) |
 | `--help-tools` | Show loaded tool documentation and exit | |
 | `--safe` | Confirm before dangerous tool operations | |

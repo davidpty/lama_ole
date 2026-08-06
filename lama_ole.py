@@ -150,7 +150,7 @@ def build_parser():
     parser.add_argument(
         "-V", "--version",
         action="version",
-        version="0.0.38"
+        version="0.0.39"
     )
     # Define arguments
     parser.add_argument(
@@ -323,6 +323,18 @@ def build_parser():
              "appends to tools configured via LAMA_OLE_TOOL"
     )
 
+    # Parameter: skill (repeatable)
+    parser.add_argument(
+        "--skill",
+        type=str,
+        action="append",
+        dest="skills",
+        default=None,
+        help="Path to a skill file whose text is loaded into the system role "
+             "(can be repeated; files are concatenated); appends to skills "
+             "configured via LAMA_OLE_SKILL"
+    )
+
     # Parameter: ignore-config-tools
     parser.add_argument(
         "--ignore-config-tools",
@@ -440,11 +452,48 @@ def _merge_tool_lists(env_tools, cli_tools):
     return merged or None
 
 
+def _load_skill_text(skill_paths):
+    """Load one or more skill files, entropy-check each, and concatenate.
+
+    Each skill file must pass the entropy check (reject binary/random data).
+    Returns the concatenated skill text with a blank line between files.
+    Exits with an error message on missing/rejected/invalid files.
+    """
+    from security.entropychecker import EntropyChecker
+
+    parts = []
+    for path in skill_paths:
+        if not os.path.exists(path):
+            print(f"Error: The skill file '{path}' was not found.", file=sys.stderr)
+            sys.exit(1)
+        try:
+            with open(path, "rb") as f:
+                raw = f.read()
+        except Exception as e:
+            print(f"Error reading skill file '{path}': {e}", file=sys.stderr)
+            sys.exit(1)
+
+        checker = EntropyChecker()
+        result = checker.feed(raw)
+        if result.is_suspicious:
+            print(
+                f"Error: skill file '{path}' rejected by entropy check: {result.reason}",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+
+        content = raw.decode("utf-8", errors="replace")
+        parts.append(content)
+
+    return "\n\n".join(parts)
+
+
 def _resolve_env_defaults(args):
     # --tool: merge env/config defaults with CLI values (unless ignored).
     # --vision_model: strict override (CLI replaces env/config defaults).
     if not args.ignore_config_tools:
         args.tools = _merge_tool_lists(_env_list("LAMA_OLE_TOOL"), args.tools)
+    args.skills = _merge_tool_lists(_env_list("LAMA_OLE_SKILL"), args.skills)
     if args.vision_models is None:
         args.vision_models = _env_list("LAMA_OLE_VISION_MODEL")
 
@@ -600,7 +649,11 @@ def main():
         else:
             print(f"Error: The file '{args.system_prompt_file}' was not found.", file=sys.stderr)
             sys.exit(1)
-        
+
+    skill_text = None
+    if args.skills:
+        skill_text = _load_skill_text(args.skills)
+
 
     # File handles
     thought_file_handle = None
@@ -660,12 +713,14 @@ def main():
                 client=client,
                 model=args.model,
                 loaded_tools=loaded_tools,
+                loaded_tool_modules=list(args.tools or []),
                 ollama_tools=ollama_tools,
                 options=options,
                 keep_alive=args.keep_alive,
                 show_thinking=args.thinking,
                 no_safety_system_prompt=args.no_safety_system_prompt,
                 system_prompt= system_prompt,
+                skill_text= skill_text,
                 verbose=args.verbose,
                 safe=args.safe,
                 thought_file_handle=thought_file_handle,
@@ -693,6 +748,7 @@ def main():
                     show_thinking=args.thinking,
                     no_safety_system_prompt= args.no_safety_system_prompt,
                     system_prompt= system_prompt,
+                    skill_text= skill_text,
                     verbose=args.verbose,
                     safe=args.safe,
                     thought_file_handle=thought_file_handle,
@@ -723,6 +779,7 @@ def main():
                 show_thinking=args.thinking,
                 no_safety_system_prompt= args.no_safety_system_prompt,
                 system_prompt= system_prompt,
+                skill_text= skill_text,
                 verbose=args.verbose,
                 safe=args.safe,
                 thought_file_handle=thought_file_handle,

@@ -20,9 +20,13 @@ lama_ole/
 │   ├── models.py            # Tool, ToolModuleInfo dataclasses
 │   ├── registry.py          # @tool decorator, tool loading
 │   └── utils.py             # _infer_params, create_uuid_15
-├── chat.py                  # ChatState + REPL with slash commands (/feed, /clear, /model, etc.)
+├── chat.py                  # ChatState + REPL with slash commands (/feed, /clear, /model, /skill, etc.)
 ├── README.md                # Full documentation
-│
+├── skills/                  # Skill library loaded into the system role (/skill, --skill)
+│   ├── code-reviewer.md
+│   └── german-assistant.md
+├── tests/                   # pytest-style + unittest-style tests
+│   └── run_all_tests.py     # Runs both frameworks (see "Running the Tests")
 └── tools/                   # Loadable tool modules (each is a Python module)
     ├── __init__.py
     ├── example_tools.py     # get_weather, calculate, read_file
@@ -44,7 +48,7 @@ lama_ole/
 |------|------|
 | **`lama_ole.py`** | CLI entry point. Parses args, creates Ollama `Client`, handles model listing/transfer/blob-server as standalone modes, then delegates to either `run_with_tools()` (one-shot) or `ChatState` + `run_chat()` (REPL). Contains the full model transfer logic (`FilesystemBlobSource`, `HttpBlobSource`). |
 | **`tool_base/`** | Core engine package. Defines `@tool` decorator that auto-infers JSON Schema from type annotations, registers tools in a registry (`registry.py`). `run_with_tools()` (`engine.py`) is the main loop: prepends safety system prompt, streams chat responses, handles tool calls (invoke → wrap result with `[data from ...]` markers → feed back to model), supports safe-mode confirmation for dangerous tools. `loop_states.py` provides `ExecutionState`/`StateManager` for state tracking and robust Ctrl-C handling. `logging.py` provides the centralized `StateLogger` used for granular timestamps. |
-| **`chat.py`** | Interactive REPL (`ChatState`). Manages multi-turn conversation history, slash commands (`/feed`, `/clear`, `/model`, `/save`, `/load`, `/tools`, `/context`, `/help`, `/exit`), and delegates each turn to `run_with_tools()`. |
+| **`chat.py`** | Interactive REPL (`ChatState`). Manages multi-turn conversation history, slash commands (`/feed`, `/clear`, `/model`, `/save`, `/load`, `/tools` (load/unload/show toolsets), `/skill`, `/context`, `/help`, `/exit`), and delegates each turn to `run_with_tools()`. |
 | **`tools/*.py`** | Tool modules. Each exports functions decorated with `@tool`. Tools can declare env vars via module-level `__tool_env__` dict (shown by `--help-tools`). |
 
 ---
@@ -53,7 +57,7 @@ lama_ole/
 
 - **Tool calling:** Python functions → JSON Schema inference → Ollama tool format conversion (`to_ollama_tools()`) → stream-based execution loop.
 - **Thinking process:** Ollama's `msg.thinking` field is printed/flushed in real-time when `-t` or `--thoughtlog` is set.
-- **Safety system prompt:** Hardcoded in `tool_base.py`; injected automatically unless `--no_safety_system_prompt` is given.
+- **Safety system prompt:** Built by `compose_system_prompt()` in `tool_base/engine.py`; injected automatically unless `--no_safety_system_prompt` is given.
 - **Model transfer:** Reads Ollama's local manifest/blobs, uploads via HTTP API to destination, rewrites Modelfile paths. Supports local→remote and remote→local (via blob server).
 
 ---
@@ -64,6 +68,33 @@ lama_ole/
 - To understand the CLI flow: read `lama_ole.py` top-to-bottom.
 - To add a new tool: create a module in `tools/`, decorate functions with `@tool`, load via `--tool mymodule`.
 - Chat REPL logic is isolated in `chat.py` — `ChatState` holds messages, tools, options; `run_chat()` drives the loop.
+
+---
+
+### Running the Tests
+
+The suite in `tests/` mixes **pytest-style** and **unittest-style** files (see
+`llm_blueprint/testing/001_guidelines.md`). The single entry point runs both:
+
+```bash
+cd lama_ole
+python3 tests/run_all_tests.py        # runs everything
+python3 tests/run_all_tests.py -v     # verbose unittest output
+```
+
+The helper executes, in order, and exits non-zero if any run fails:
+
+1. `python3 -m unittest discover -s tests -p "test_*.py"` — the unittest-style
+   files (`test_edit_tools.py`, `test_true.py`).
+2. `python3 -m pytest tests/ -q` — the full suite (pytest also collects the
+   unittest classes, so no test is skipped).
+
+Equivalent one-liners when only one framework is needed:
+
+```bash
+python3 -m pytest tests/ -q
+python3 -m unittest discover -s tests -p "test_*.py" -v
+```
 
 ---
 

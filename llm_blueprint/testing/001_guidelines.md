@@ -108,9 +108,25 @@ The following invariants are covered by tests and must not regress:
 
 ## Running the tests
 
+The suite mixes pytest-style and unittest-style test files. The single entry
+point runs **both** frameworks:
+
 ```bash
 cd lama_ole
+python3 tests/run_all_tests.py        # runs everything
+python3 tests/run_all_tests.py -v     # verbose unittest output
+```
+
+The helper executes `python3 -m unittest discover -s tests -p "test_*.py"`
+(the unittest files: `test_edit_tools.py`, `test_true.py`) followed by
+`python3 -m pytest tests/ -q` (the full suite; pytest also collects the
+unittest classes), and exits non-zero if any run fails.
+
+Equivalent one-liners when only one framework is needed:
+
+```bash
 python3 -m pytest tests/ -q
+python3 -m unittest discover -s tests -p "test_*.py" -v
 ```
 
 Run a single area:
@@ -125,4 +141,4 @@ python3 -m pytest tests/test_entropychecker_class.py -q
 - [ ] The `sys.path` bootstrap block (Rule 2) is present and before package imports.
 - [ ] Deprecated tool imports point at `tools_insecure_outdated_deprecated/`.
 - [ ] The test does not hard-code the old `unique_byte_threshold == 64` default.
-- [ ] `python3 -m pytest tests/ -q` is green.
+- [ ] `python3 tests/run_all_tests.py` is green.

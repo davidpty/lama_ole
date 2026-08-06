@@ -48,6 +48,33 @@ def _entropy_check_tool_result(result, tool_name) -> None:
             result["data"] = str(content)[:1000] + "... [TRUNCATED BY ENTROPY CHECK]"
 
 
+def compose_system_prompt(
+    system_prompt: Optional[str] = None,
+    skill_text: Optional[str] = None,
+    no_safety_system_prompt: bool = False,
+) -> str:
+    """Build the system message content from its ordered parts.
+
+    Order: base system prompt -> optional skill block -> safety prompts.
+    The skill block is delimited so it can be identified and stripped on
+    unload, and so it stays visually distinct from the base prompt.
+    """
+    sp = ""
+    if system_prompt is not None:
+        sp += system_prompt
+        sp += "\n"
+    if skill_text:
+        sp += "[SKILL BEGIN]\n"
+        sp += skill_text
+        sp += "\n[SKILL END]\n"
+    if not no_safety_system_prompt:
+        from .constants import SAFETY_SYSTEM_PROMPT, JSON_RETURN_PROMPT
+
+        sp += SAFETY_SYSTEM_PROMPT
+        sp += JSON_RETURN_PROMPT
+    return sp
+
+
 def run_with_tools(
     client,
     model,
@@ -59,6 +86,7 @@ def run_with_tools(
     show_thinking: bool,
     no_safety_system_prompt: bool,
     system_prompt: Optional[str] = None,
+    skill_text: Optional[str] = None,
     verbose: int = 0,
     safe: bool = False,
     thought_file_handle=None,
@@ -92,14 +120,11 @@ def run_with_tools(
 
     has_system = any(m.get("role") == "system" for m in messages)
     if not has_system:
-        sp = ""
-        if system_prompt is not None:
-            sp += system_prompt
-            sp += "\n"
-        if not no_safety_system_prompt:
-            from .constants import SAFETY_SYSTEM_PROMPT, JSON_RETURN_PROMPT
-            sp += SAFETY_SYSTEM_PROMPT
-            sp += JSON_RETURN_PROMPT
+        sp = compose_system_prompt(
+            system_prompt=system_prompt,
+            skill_text=skill_text,
+            no_safety_system_prompt=no_safety_system_prompt,
+        )
 
         system_msg = {"role": "system", "content": sp}
         messages.insert(0, system_msg)
