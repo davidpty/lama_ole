@@ -150,7 +150,7 @@ def build_parser():
     parser.add_argument(
         "-V", "--version",
         action="version",
-        version="0.0.39"
+        version="0.0.40"
     )
     # Define arguments
     parser.add_argument(
@@ -299,9 +299,9 @@ def build_parser():
     parser.add_argument(
         "--color",
         type=str,
-        default=_env_choice("LAMA_OLE_COLOR", "auto", ["auto", "always", "never"]),
-        choices=["auto", "always", "never"],
-        help="Colorize user input, thinking, and LLM output: 'auto' (TTY only), 'always', or 'never' (default: auto)"
+        default=_env_choice("LAMA_OLE_COLOR", "auto", ["auto", "always", "never", "none"]),
+        choices=["auto", "always", "never", "none"],
+        help="Colorize user input, thinking, and LLM output: 'auto' (TTY only), 'always', or 'never'/'none' (default: auto)"
     )
 
     # Parameter: safe
@@ -732,6 +732,7 @@ def main():
                 ollama_websearch=args.ollama_websearch,
                 ndjson_log_path=args.logndjson,
                 ndjson_log_file_handle=ndjson_log_file_handle,
+                color=args.color,
             )
             if content.strip():
                 user_msg = {"role": "user", "content": content}

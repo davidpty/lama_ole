@@ -267,8 +267,8 @@ In chat mode (`--chat`), lines starting with `/` are commands:
 | `/feed <path>` | Read a file and send its content as a message |
 | `/clear` | Clear the conversation history |
 | `/model <name>` | Switch to a different model |
-| `/save <path>` | Save the conversation to a JSON file (model, messages, active skill and loaded toolsets) |
-| `/load <path>` | Load a conversation from a JSON file (restores the active skill and re-loads toolsets) |
+| `/save <path>` | Save the conversation to a JSON file (model, messages, active skill, system prompt and loaded toolsets) |
+| `/load <path>` | Load a conversation from a JSON file (restores the active skill, system prompt and re-loads toolsets) |
 | `/tools loaded` | List loaded toolsets and their tools |
 | `/tools available` | List toolsets available to load |
 | `/tools show <toolset>` | List all tools of one toolset |
@@ -279,12 +279,20 @@ In chat mode (`--chat`), lines starting with `/` are commands:
 | `/skill load <name-or-path> [<name-or-path> ...]` | Load one or more skills into the system role |
 | `/skill unload` | Unload the active skill |
 | `/skill show` | Show the active skill |
+| `/systemprompt [show]` | Show the current system prompt |
+| `/systemprompt <file>` | Load a system prompt from a file |
+| `/systemprompt unset` | Unset the system prompt (back to default) |
 | `/context` | Show message count and total character count |
 | `/help` | Show this help message |
 | `/exit`, `/quit` | Exit the chat |
 
 Bare `/tools` prints the tool subcommand usage. Bare `/skill` prints the skill
-subcommand usage.
+subcommand usage. Bare `/systemprompt` prints the current system prompt.
+
+Tab completion is enabled in interactive mode: commands, `/tools`, `/skill` and
+`/systemprompt` subcommands, and file paths (for `/feed`, `/save`, `/load`,
+`/skill load` and `/systemprompt`) are completed with Tab. Completion needs the
+`readline` module and is skipped automatically when stdin is not a terminal.
 
 ## Configuration Options
 
@@ -452,7 +460,7 @@ the configured default.
 | `LAMA_OLE_SAFE` | boolean | `--safe` / `--no-safe` |
 | `LAMA_OLE_OLLAMA_WEBSRCH` | boolean | `--ollama_websearch` / `--no-ollama_websearch` |
 | `LAMA_OLE_VERBOSE` | integer | `-v, --verbose` (CLI `-v` adds to it) |
-| `LAMA_OLE_COLOR` | string | `--color` |
+| `LAMA_OLE_COLOR` | string | `--color` (`auto`, `always`, `never` or `none`) |
 | `LAMA_OLE_TOOL` | space/comma-separated list | `--tool` (CLI appends, deduped) |
 | `LAMA_OLE_VISION_MODEL` | space/comma-separated list | `--vision_model` (CLI replaces) |
 | `LAMA_OLE_MAX_TOOL_ROUNDS` | integer | `--max_tool_rounds` |

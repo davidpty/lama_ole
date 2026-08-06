@@ -8,7 +8,7 @@ C_RESET = "\x01\033[0m\x02"
 
 
 def color_mode_enabled(mode: str) -> bool:
-    if mode == "never":
+    if mode in ("never", "none"):
         return False
     if mode == "always":
         return True

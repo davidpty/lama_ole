@@ -111,8 +111,120 @@ class ChatState:
         self.ollama_tools = to_ollama_tools(self.loaded_tools) if self.loaded_tools else None
 
 
+_COMMANDS = [
+    "/feed",
+    "/clear",
+    "/model",
+    "/save",
+    "/load",
+    "/tools",
+    "/skill",
+    "/systemprompt",
+    "/context",
+    "/help",
+    "/exit",
+    "/quit",
+]
+
+_COMMAND_SUBCOMMANDS = {
+    "/tools": ["loaded", "available", "show", "all", "load", "unload"],
+    "/skill": ["list", "load", "unload", "show"],
+    "/systemprompt": ["show", "unset"],
+}
+
+_PATH_COMMANDS = {"/feed", "/save", "/load"}
+
+
+def _complete_file_path(partial: str) -> list:
+    """Completion candidates for a (possibly partial) file path.
+
+    Directories are returned with a trailing separator so Tab keeps
+    expanding into them.
+    """
+    partial = os.path.expanduser(partial)
+    dirname, basename = os.path.split(partial)
+    if dirname == "":
+        dirname = "."
+    try:
+        entries = sorted(os.listdir(dirname))
+    except OSError:
+        return []
+    matches = []
+    for name in entries:
+        if not name.startswith(basename):
+            continue
+        full = name if dirname in (".", "") else os.path.join(dirname, name)
+        if os.path.isdir(full):
+            full += os.sep
+        matches.append(full)
+    return matches
+
+
+def _completion_candidates(buffer: str) -> list:
+    """Compute Tab-completion candidates for a raw input line.
+
+    Pure function (no readline dependency) so it can be unit-tested:
+    commands on the first word, subcommands on the first argument, and
+    file paths for commands that take a path argument.
+    """
+    stripped = buffer.lstrip()
+    if not stripped:
+        return []
+    trailing_space = stripped[-1] in " \t"
+    tokens = stripped.split()
+    head = tokens[0].lower()
+    partial = "" if trailing_space else tokens[-1]
+
+    if len(tokens) == 1 and not trailing_space:
+        if head.startswith("/"):
+            return [c for c in _COMMANDS if c.startswith(head)]
+        return []
+
+    arg_index = len(tokens) if trailing_space else len(tokens) - 1
+
+    if arg_index == 1 and head in _COMMAND_SUBCOMMANDS:
+        subs = [s for s in _COMMAND_SUBCOMMANDS[head] if s.startswith(partial)]
+        if head == "/systemprompt":
+            for f in _complete_file_path(partial):
+                if f not in subs:
+                    subs.append(f)
+        return subs
+
+    if head in _PATH_COMMANDS and arg_index == 1:
+        return _complete_file_path(partial)
+
+    if head == "/skill" and arg_index == 2 and tokens[1].lower() == "load":
+        return _complete_file_path(partial)
+
+    if head == "/systemprompt" and arg_index >= 2:
+        return _complete_file_path(partial)
+
+    return []
+
+
+def _complete(text: str, state: int):
+    """readline completer callback, driven by the current line buffer."""
+    if readline is None:
+        return None
+    matches = _completion_candidates(readline.get_line_buffer())
+    return matches[state] if state < len(matches) else None
+
+
+def _install_readline_completion() -> None:
+    """Enable Tab completion for commands, subcommands and file paths."""
+    if readline is None:
+        return
+    readline.set_completer(_complete)
+    readline.set_completer_delims(" \t\n")
+    if "libedit" in (readline.__doc__ or ""):
+        readline.parse_and_bind("bind ^I rl_complete")
+    else:
+        readline.parse_and_bind("tab: complete")
+
+
 def run_chat(state: ChatState):
     print("Chat mode. Type /help for commands.")
+    _install_readline_completion()
     use_color = color_mode_enabled(state.color)
     prompt = colored(">>> ", C_PROMPT, use_color)
 
@@ -223,6 +335,9 @@ def _handle_command(line: str, state: ChatState) -> bool:
     elif cmd == "/skill":
         _cmd_skill(arg, state)
 
+    elif cmd == "/systemprompt":
+        _cmd_systemprompt(arg, state)
+
     elif cmd == "/context":
         total_chars = sum(len(m.get("content", "") or "") for m in state.messages)
         print(f"Messages: {len(state.messages)}, total characters: {total_chars}")
@@ -251,6 +366,9 @@ def _show_help():
     print("  /skill load <name-or-path> [<name-or-path> ...]  Load skill(s) into the system role")
     print("  /skill unload   Unload the active skill")
     print("  /skill show     Show the active skill")
+    print("  /systemprompt [show]  Show the current system prompt")
+    print("  /systemprompt <file>  Load a system prompt from a file")
+    print("  /systemprompt unset   Unset the system prompt")
     print("  /context        Show conversation stats")
     print("  /help           Show this help message")
     print("  /exit, /quit    Exit the chat")
@@ -324,6 +442,8 @@ def _cmd_save(path: str, state: ChatState):
     if state.skill is not None or state.skill_text is not None:
         data["skill"] = state.skill
         data["skill_text"] = state.skill_text
+    if state.system_prompt is not None:
+        data["system_prompt"] = state.system_prompt
     if state.loaded_tool_modules:
         data["loaded_tool_modules"] = list(state.loaded_tool_modules)
     if os.path.exists(path):
@@ -371,6 +491,8 @@ def _cmd_load(path: str, state: ChatState):
     if "skill" in data or "skill_text" in data:
         state.skill = data.get("skill")
         state.skill_text = data.get("skill_text")
+    if "system_prompt" in data:
+        state.system_prompt = data["system_prompt"]
     print(f"Loaded conversation with {len(state.messages)} messages")
 
 
@@ -406,19 +528,19 @@ def _resolve_skill_path(name: str, state: ChatState) -> str:
     return name
 
 
-def _read_skill_text(path: str) -> str:
-    """Read a skill file as UTF-8 text after passing the entropy check.
+def _read_text_file(path: str, label: str = "file") -> str:
+    """Read a text file as UTF-8 after passing the entropy check.
 
     Returns None on missing file, read error, or entropy-check rejection.
     """
     if not os.path.exists(path):
-        print(f"Error: skill file not found: {path}")
+        print(f"Error: {label} not found: {path}")
         return None
     try:
         with open(path, "rb") as f:
             raw = f.read()
     except Exception as e:
-        print(f"Error reading skill file: {e}")
+        print(f"Error reading {label}: {e}")
         return None
 
     from security.entropychecker import EntropyChecker
@@ -426,9 +548,17 @@ def _read_skill_text(path: str) -> str:
     checker = EntropyChecker()
     result = checker.feed(raw)
     if result.is_suspicious:
-        print(f"Error: skill file '{path}' rejected by entropy check: {result.reason}")
+        print(f"Error: {label} '{path}' rejected by entropy check: {result.reason}")
         return None
     return raw.decode("utf-8", errors="replace")
+
+
+def _read_skill_text(path: str) -> str:
+    """Read a skill file as UTF-8 text after passing the entropy check.
+
+    Returns None on missing file, read error, or entropy-check rejection.
+    """
+    return _read_text_file(path, label="skill file")
 
 
 def _load_skill_texts(names: list, state: ChatState):
@@ -499,6 +629,33 @@ def _cmd_skill(arg: str, state: ChatState):
         print("  /skill load <name-or-path> [<name-or-path> ...]  Load skill(s) into the system role")
         print("  /skill unload                            Unload the active skill")
         print("  /skill show                              Show the active skill")
+
+
+def _cmd_systemprompt(arg: str, state: ChatState):
+    arg = arg.strip()
+
+    if arg == "unset":
+        if state.system_prompt is None:
+            print("No system prompt set.")
+            return
+        state.system_prompt = None
+        state.apply_skill()
+        print("System prompt unset.")
+        return
+
+    if not arg or arg == "show":
+        if state.system_prompt:
+            print(state.system_prompt)
+        else:
+            print("No system prompt set.")
+        return
+
+    text = _read_text_file(arg, label="system prompt file")
+    if text is None:
+        return
+    state.system_prompt = text
+    state.apply_skill()
+    print(f"System prompt loaded ({len(text)} characters)")
 
 
 def _show_tools_usage():

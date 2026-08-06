@@ -204,6 +204,15 @@ class TestArgparseIntegration:
         assert args.color == "auto"
         assert "banana" in capsys.readouterr().err
 
+    def test_color_none_accepts_cli_choice(self):
+        args = build_parser().parse_args(["--color", "none"])
+        assert args.color == "none"
+
+    def test_color_none_accepts_env_choice(self, env_patch, monkeypatch):
+        monkeypatch.setenv("LAMA_OLE_COLOR", "none")
+        args = build_parser().parse_args([])
+        assert args.color == "none"
+
 
 class TestResolveEnvDefaults:
     def test_env_tools_used_when_cli_absent(self, env_patch, monkeypatch):
