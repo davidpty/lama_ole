@@ -1,7 +1,7 @@
 """Integration tests for the entropy checker in the remaining tools.
 
 Covers the /feed command (chat.py), the defensive layer (tool_base.py) and
-the other file-reading tool modules: dev_tools_safer, dev_tools_safer_readonly,
+the other file-reading tool modules: dev_tools_safer, dev_tools_readonly,
 example_tools, read_lines_patch_lines, read_lines_patch_lines_zero_based and
 read_base64.
 """
@@ -21,8 +21,8 @@ if lama_ole_dir not in sys.path:
 
 from tools_insecure_outdated_deprecated.dev_tools_safer import read_file as safer_read_file
 from tools_insecure_outdated_deprecated.dev_tools_safer import grep as safer_grep
-from tools.dev_tools_safer_readonly import read_file as readonly_read_file
-from tools.dev_tools_safer_readonly import grep as readonly_grep
+from tools.dev_tools_readonly import read_file as readonly_read_file
+from tools.dev_tools_readonly import grep as readonly_grep
 from tools.example_tools import read_file as example_read_file
 from tools.read_lines_patch_lines import grep_from_file, read_lines
 from tools.read_lines_patch_lines_zero_based import grep0_from_file, read_lines0
@@ -78,7 +78,7 @@ class TestDevToolsSaferEntropy:
 
 
 class TestDevToolsSaferReadonlyEntropy:
-    """dev_tools_safer_readonly read_file / grep entropy integration."""
+    """dev_tools_readonly read_file / grep entropy integration."""
 
     def test_read_file_valid_text(self):
         with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False) as f:

@@ -31,8 +31,7 @@ lama_ole/
     ├── __init__.py
     ├── example_tools.py     # get_weather, calculate, read_file
     ├── media_understanding_tools.py  # image/video/audio via vision models + Whisper + OCR
-    ├── dev_tools.py         # run_command, read/write/glob files, git_status, etc.
-    ├── dev_tools_safer*.py  # Restricted subsets of dev tools
+    ├── dev_tools_readonly.py  # Restricted subsets of dev tools
     ├── web_tools.py         # web_fetch, web_search
     ├── image_tools.py       # Image format conversion/resizing
     ├── video_tools.py       # Video format conversion/trimming

@@ -6,6 +6,11 @@ A CLI tool to interact with **Ollama** instances. Supports streaming chat, tool
 calling, thinking-process handling, media understanding (image/video/audio), and
 flexible input/output options.
 
+## For the impatient developer
+```
+lama_ole.py --host localhost -m gemma4:26b-a4b-it-qat --chat -t -v --tool tools.dev_tools_readonly --tool tools.edit --logndjson log.ndjson
+```
+
 ## Features
 
 - **Streaming Support** — Real-time output as the model generates text.
