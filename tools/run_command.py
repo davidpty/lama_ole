@@ -31,6 +31,12 @@ def _validate_command(command: str) -> Optional[str]:
 @tool(description="Execute a shell command and return its output")
 def run_command(command: str, timeout: int = 30) -> dict[str, Any]:
     """Execute a shell command and return its output."""
+
+    # sometimes LLMs give the wrong datatype
+    if isinstance( timeout, str):
+       timeout = int( timeout)
+
+
     error = _validate_command(command)
     if error:
         return {"status": "error", "message": [error]}
