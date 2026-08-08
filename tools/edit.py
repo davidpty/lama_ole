@@ -54,6 +54,9 @@ def create_new_file(path: str, content: str):
     if safety_error:
         return {"status": "error", "message": [safety_error]}
 
+    # little LLM speedup
+    os.makedirs( os.path.dirname( path), exist_ok=True)
+
     try:
         with open(path, "w", encoding="utf-8") as f:
             f.write(content)
