@@ -533,20 +533,24 @@ the configured default.
 | `LAMA_OLE_MAX_TOOL_ROUNDS_CONTINUATION` | string | `--max_tool_rounds_continuation` |
 | `LAMA_OLE_SYSTEM_PROMPT` | string | `--system_prompt` |
 | `LAMA_OLE_SYSTEM_PROMPT_FILE` | string | `--system_prompt_file` |
-| `LAMA_OLE_COLOR_PROMPT` | color spec | (config-only, no flag) |
-| `LAMA_OLE_COLOR_THINKING` | color spec | (config-only, no flag) |
-| `LAMA_OLE_COLOR_OUTPUT` | color spec | (config-only, no flag) |
-| `LAMA_OLE_COLOR_METER_LOW` | color spec | (config-only, no flag) |
-| `LAMA_OLE_COLOR_METER_MID` | color spec | (config-only, no flag) |
-| `LAMA_OLE_COLOR_METER_HIGH` | color spec | (config-only, no flag) |
+ | `LAMA_OLE_COLOR_PROMPT` | color spec | (config-only, no flag) |
+ | `LAMA_OLE_COLOR_THINKING` | color spec | (config-only, no flag) |
+ | `LAMA_OLE_COLOR_OUTPUT` | color spec | (config-only, no flag) |
+ | `LAMA_OLE_COLOR_INPUT` | color spec | (config-only, no flag) |
+ | `LAMA_OLE_COLOR_METER_LOW` | color spec | (config-only, no flag) |
+ | `LAMA_OLE_COLOR_METER_MID` | color spec | (config-only, no flag) |
+ | `LAMA_OLE_COLOR_METER_HIGH` | color spec | (config-only, no flag) |
 
 The `LAMA_OLE_COLOR_*` variables customize the ANSI colors used for the chat
-prompt, the thinking stream, the LLM output, and the context meter (green below
-70% usage, yellow from 70%, red from 90%). Each accepts a comma-separated
-color spec: a named foreground color (`black`…`white`, `bright_*`, `grey`/`gray`),
-a 256-color number (`0`–`255`), a hex value (`#rrggbb`), plus attributes
-(`bold`, `italic`, `underline`, `dim`, `reverse`). Examples: `bold,green`,
-`#ff8700`, `bright_cyan`. Use `default` or `none` to restore the built-in color.
+prompt, your typed input, the thinking stream, the LLM output, and the context
+meter (green below 70% usage, yellow from 70%, red from 90%). Each accepts a
+comma-separated color spec: a named foreground color (`black`…`white`, `bright_*`,
+`grey`/`gray`), a 256-color number (`0`–`255`), a hex value (`#rrggbb`), plus
+attributes (`bold`, `italic`, `underline`, `dim`, `reverse`). Examples:
+`bold,green`, `#ff8700`, `bright_cyan`. Use `default` or `none` to restore the
+built-in color. Your typed input is echoed in the input color by appending its
+escape code to the prompt (so it matches the replay); the default is `bright_cyan`
+while the model output defaults to `bright_white`.
 These are theme preferences, so they are configured via the env/config files
 only (the CLI keeps just the `--color` on/off switch); an invalid value prints a
 warning and keeps the built-in default.

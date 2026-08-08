@@ -606,6 +606,7 @@ def main():
         prompt=_env_str("LAMA_OLE_COLOR_PROMPT", None),
         thinking=_env_str("LAMA_OLE_COLOR_THINKING", None),
         output=_env_str("LAMA_OLE_COLOR_OUTPUT", None),
+        input=_env_str("LAMA_OLE_COLOR_INPUT", None),
         meter_low=_env_str("LAMA_OLE_COLOR_METER_LOW", None),
         meter_mid=_env_str("LAMA_OLE_COLOR_METER_MID", None),
         meter_high=_env_str("LAMA_OLE_COLOR_METER_HIGH", None),

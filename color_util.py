@@ -3,7 +3,8 @@ import sys
 
 C_PROMPT = "\x01\033[95m\x02"
 C_THINK = "\x01\033[2;37m\x02"
-C_OUTPUT = "\x01\033[96m\x02"
+C_OUTPUT = "\x01\033[97m\x02"
+C_INPUT = "\x01\033[96m\x02"
 C_METER_LOW = "\x01\033[92m\x02"
 C_METER_MID = "\x01\033[93m\x02"
 C_METER_HIGH = "\x01\033[91m\x02"
@@ -13,6 +14,7 @@ _DEFAULTS = {
     "prompt": C_PROMPT,
     "thinking": C_THINK,
     "output": C_OUTPUT,
+    "input": C_INPUT,
     "meter_low": C_METER_LOW,
     "meter_mid": C_METER_MID,
     "meter_high": C_METER_HIGH,
@@ -53,6 +55,7 @@ _GLOBALS = {
     "prompt": "C_PROMPT",
     "thinking": "C_THINK",
     "output": "C_OUTPUT",
+    "input": "C_INPUT",
     "meter_low": "C_METER_LOW",
     "meter_mid": "C_METER_MID",
     "meter_high": "C_METER_HIGH",
@@ -99,11 +102,12 @@ def parse_color_spec(value):
     return "\x01\033[{0}m\x02".format(";".join(codes))
 
 
-def configure(prompt=None, thinking=None, output=None, meter_low=None, meter_mid=None, meter_high=None):
+def configure(prompt=None, thinking=None, output=None, input=None, meter_low=None, meter_mid=None, meter_high=None):
     for key, value in (
         ("prompt", prompt),
         ("thinking", thinking),
         ("output", output),
+        ("input", input),
         ("meter_low", meter_low),
         ("meter_mid", meter_mid),
         ("meter_high", meter_high),

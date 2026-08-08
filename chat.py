@@ -461,6 +461,8 @@ def run_chat(state: ChatState):
     if state.ctx_meter:
         _ensure_ctx_max(state)
     base_prompt = color_util.colored(">>> ", color_util.C_PROMPT, use_color)
+    if use_color:
+        base_prompt += color_util.C_INPUT
 
     while True:
         if state.ctx_meter:
@@ -471,7 +473,12 @@ def run_chat(state: ChatState):
         # during the turn only rolls back what this iteration added.
         messages_before = len(state.messages)
         try:
-            line = input(prompt)
+            try:
+                line = input(prompt)
+            finally:
+                if use_color:
+                    sys.stdout.write(color_util.C_RESET)
+                    sys.stdout.flush()
 
             stripped = line.strip()
             if not stripped:
@@ -1020,7 +1027,10 @@ def _replay_history(state: ChatState, use_color: bool) -> None:
         if role == "system":
             continue
         if role == "user":
-            print(color_util.colored(f">>> {content}", color_util.C_PROMPT, use_color))
+            print(
+                color_util.colored(">>> ", color_util.C_PROMPT, use_color)
+                + color_util.colored(content, color_util.C_INPUT, use_color)
+            )
         elif role == "assistant":
             if state.show_thinking and m.get("thinking"):
                 print(color_util.colored(m["thinking"], color_util.C_THINK, use_color))

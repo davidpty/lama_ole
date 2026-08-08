@@ -82,6 +82,12 @@ class TestRunChatPromptColoring:
         prompt = self._capture_prompt(monkeypatch, state)
         assert "\x1b[" in prompt
 
+    def test_always_prompt_ends_with_input_color(self, monkeypatch):
+        state = chat.ChatState(client=None, model="m", color="always")
+        prompt = self._capture_prompt(monkeypatch, state)
+        assert prompt.endswith(color_util.C_INPUT)
+        assert color_util.colored(">>> ", color_util.C_PROMPT, True) in prompt
+
 
 class TestParseColorSpec:
     def test_named_color(self):
@@ -157,6 +163,13 @@ class TestConfigure:
         color_util.configure(prompt="default")
         assert color_util.C_PROMPT == color_util._DEFAULTS["prompt"]
 
+    def test_configure_input(self, monkeypatch):
+        monkeypatch.setattr(color_util, "C_INPUT", "\x01\033[96m\x02")
+        color_util.configure(input="green")
+        assert color_util.C_INPUT == "\x01\033[32m\x02"
+        color_util.configure(input="default")
+        assert color_util.C_INPUT == color_util._DEFAULTS["input"]
+
 
 class TestRunChatConfiguredColor:
     def test_configured_prompt_color_used_by_run_chat(self, monkeypatch):
@@ -190,3 +203,13 @@ class TestColorEnvWiring:
         from lama_ole import lama_ole as lama_ole_module
 
         assert lama_ole_module._env_str("LAMA_OLE_COLOR_PROMPT", None) is None
+
+    def test_input_env_var_feeds_configure(self, monkeypatch, capsys):
+        from lama_ole import lama_ole as lama_ole_module
+
+        monkeypatch.setattr(color_util, "C_INPUT", "\x01\033[96m\x02")
+        monkeypatch.setenv("LAMA_OLE_COLOR_INPUT", "yellow")
+        input_env = lama_ole_module._env_str("LAMA_OLE_COLOR_INPUT", None)
+        assert input_env == "yellow"
+        color_util.configure(input=input_env)
+        assert color_util.C_INPUT == "\x01\033[33m\x02"
