@@ -41,8 +41,10 @@ def load_tools(module_name: str) -> List[Tool]:
         importlib.import_module(module_name)
     mod = sys.modules[module_name]
     tools = []
+    readonly = bool(getattr(mod, "__tool_readonly__", False))
     for obj in vars(mod).values():
         if isinstance(obj, Tool):
+            obj.readonly = readonly
             tools.append(obj)
     env_vars = getattr(mod, "__tool_env__", {})
     if not any(m.module_name == module_name for m in _TOOL_MODULES):
@@ -90,7 +92,13 @@ def peek_tools_of_module(module_name: str) -> List[Tool]:
     if module_name not in sys.modules:
         importlib.import_module(module_name)
     mod = sys.modules[module_name]
-    return [obj for obj in vars(mod).values() if isinstance(obj, Tool)]
+    readonly = bool(getattr(mod, "__tool_readonly__", False))
+    tools = []
+    for obj in vars(mod).values():
+        if isinstance(obj, Tool):
+            obj.readonly = readonly
+            tools.append(obj)
+    return tools
 
 
 def get_tool_modules_info() -> List[ToolModuleInfo]:

@@ -4,6 +4,11 @@ from .registry import tool, load_tools, get_tool_modules_info, get_available_too
 from .config import set_vision_models, get_vision_models, set_ollama_host, get_ollama_host
 from .loop_states import ExecutionState, ExecutionInterrupted, StateManager
 from .logging import StateLogger, _state_ts, _write_input
+from .mode_switch import (
+    EscapeSequenceParser,
+    TypeAheadBuffer,
+    ModeHotkeyListener,
+)
 
 __all__ = [
     "Tool",
@@ -28,4 +33,7 @@ __all__ = [
     "StateLogger",
     "_state_ts",
     "_write_input",
+    "EscapeSequenceParser",
+    "TypeAheadBuffer",
+    "ModeHotkeyListener",
 ]

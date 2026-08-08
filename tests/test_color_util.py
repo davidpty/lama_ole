@@ -68,13 +68,13 @@ class TestRunChatPromptColoring:
     def test_never_gives_plain_prompt(self, monkeypatch):
         state = chat.ChatState(client=None, model="m", color="never", ctx_meter=False)
         prompt = self._capture_prompt(monkeypatch, state)
-        assert prompt == ">>> "
+        assert prompt == "[build] >>> "
         assert "\x1b[" not in prompt
 
     def test_none_gives_plain_prompt(self, monkeypatch):
         state = chat.ChatState(client=None, model="m", color="none", ctx_meter=False)
         prompt = self._capture_prompt(monkeypatch, state)
-        assert prompt == ">>> "
+        assert prompt == "[build] >>> "
         assert "\x1b[" not in prompt
 
     def test_always_gives_colored_prompt(self, monkeypatch):

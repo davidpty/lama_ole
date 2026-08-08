@@ -12,6 +12,8 @@ from .models import Tool
 from .constants import DANGEROUS_TOOLS
 from .utils import create_uuid_15
 
+_MISSING = object()
+
 
 def _entropy_check_tool_result(result, tool_name) -> None:
     """Defensive entropy check on a tool result dict (opt-in, see below).
@@ -52,12 +54,14 @@ def compose_system_prompt(
     system_prompt: Optional[str] = None,
     skill_text: Optional[str] = None,
     no_safety_system_prompt: bool = False,
+    mode: Optional[str] = None,
 ) -> str:
     """Build the system message content from its ordered parts.
 
-    Order: base system prompt -> optional skill block -> safety prompts.
-    The skill block is delimited so it can be identified and stripped on
-    unload, and so it stays visually distinct from the base prompt.
+    Order: base system prompt -> optional skill block -> optional plan-mode
+    block -> safety prompts. The skill block is delimited so it can be
+    identified and stripped on unload, and so it stays visually distinct from
+    the base prompt.
     """
     sp = ""
     if system_prompt is not None:
@@ -67,6 +71,12 @@ def compose_system_prompt(
         sp += "[SKILL BEGIN]\n"
         sp += skill_text
         sp += "\n[SKILL END]\n"
+    if mode == "plan":
+        from .constants import PLAN_MODE_SYSTEM_PROMPT
+
+        sp += "[PLAN MODE BEGIN]\n"
+        sp += PLAN_MODE_SYSTEM_PROMPT
+        sp += "\n[PLAN MODE END]\n"
     if not no_safety_system_prompt:
         from .constants import SAFETY_SYSTEM_PROMPT, JSON_RETURN_PROMPT
 
@@ -87,6 +97,7 @@ def run_with_tools(
     no_safety_system_prompt: bool,
     system_prompt: Optional[str] = None,
     skill_text: Optional[str] = None,
+    mode: Optional[str] = None,
     verbose: int = 0,
     safe: bool = False,
     thought_file_handle=None,
@@ -100,6 +111,7 @@ def run_with_tools(
     color: str = "auto",
     state_manager=None,
     metrics: Optional[dict] = None,
+    mode_state=None,
 ):
     from .loop_states import ExecutionState, StateManager, ExecutionInterrupted
     from .logging import StateLogger
@@ -112,6 +124,40 @@ def run_with_tools(
     final_response = ""
     last_prompt_eval_count = None
     last_eval_count = None
+
+    def _current_mode() -> str:
+        """Effective mode right now (may change mid-turn via the hotkey)."""
+        if mode_state is not None:
+            current = getattr(mode_state, "mode", None)
+            if current is not None:
+                return current
+        return mode or "build"
+
+    def _refresh_tools_for_request():
+        """Adopt mode_state's advertised tool list after a mid-turn toggle."""
+        if mode_state is None:
+            return tools_for_request
+        new_tools = getattr(mode_state, "ollama_tools", _MISSING)
+        if new_tools is not _MISSING and new_tools is not tools_for_request:
+            return new_tools
+        return tools_for_request
+
+    tools_for_request = ollama_tools
+
+    from contextlib import contextmanager
+
+    @contextmanager
+    def _hotkey_suspended():
+        """Park the mid-turn hotkey listener around a blocking stdin prompt."""
+        pause = getattr(mode_state, "hotkey_pause", None)
+        resume = getattr(mode_state, "hotkey_resume", None)
+        if pause is not None:
+            pause()
+        try:
+            yield
+        finally:
+            if resume is not None:
+                resume()
 
     thought_logger = (
         StateLogger(handle=thought_file_handle) if thought_file_handle else None
@@ -129,6 +175,7 @@ def run_with_tools(
             system_prompt=system_prompt,
             skill_text=skill_text,
             no_safety_system_prompt=no_safety_system_prompt,
+            mode=mode,
         )
 
         system_msg = {"role": "system", "content": sp}
@@ -185,7 +232,8 @@ def run_with_tools(
                 print("  4. Quit", file=sys.stderr)
                 print("Enter choice (1-4): ", file=sys.stderr, end='', flush=True)
                 try:
-                    choice = sys.stdin.readline().strip()
+                    with _hotkey_suspended():
+                        choice = sys.stdin.readline().strip()
                 except EOFError:
                     choice = "3"
                 except KeyboardInterrupt:
@@ -198,7 +246,8 @@ def run_with_tools(
                         file=sys.stderr, end='', flush=True,
                     )
                     try:
-                        new_val = sys.stdin.readline().strip()
+                        with _hotkey_suspended():
+                            new_val = sys.stdin.readline().strip()
                         max_tool_rounds = int(new_val)
                         print(
                             f"New limit set to {max_tool_rounds}.",
@@ -238,11 +287,13 @@ def run_with_tools(
         response_tool_calls = None
         think_text = ""
 
+        tools_for_request = _refresh_tools_for_request()
+
         try:
             stream = client.chat(
                 model=model,
                 messages=[{k: v for k, v in m.items() if k != "thinking"} for m in messages],
-                tools=ollama_tools,
+                tools=tools_for_request,
                 stream=True,
                 options=options,
                 keep_alive=keep_alive,
@@ -369,35 +420,44 @@ def run_with_tools(
 
                 try:
                     if tool_obj:
-                        should_run = True
-                        if safe and tool_name in DANGEROUS_TOOLS:
-                            print(
-                                f"\n[DANGER] Tool '{tool_name}' called with: {args_str}",
-                                file=sys.stderr,
-                            )
-                            print(
-                                "Proceed? (y/N): ",
-                                file=sys.stderr, end='', flush=True,
-                            )
-                            try:
-                                answer = sys.stdin.readline().strip().lower()
-                            except EOFError:
-                                answer = 'n'
-                            except KeyboardInterrupt:
-                                answer = 'n'
-                            should_run = answer == 'y'
-
-                        if should_run:
-                            try:
-                                raw_result = tool_obj.fn(**arguments)
-                                if isinstance(raw_result, dict):
-                                    result = raw_result
-                                else:
-                                    result = {"status": "success", "data": raw_result}
-                            except Exception as e:
-                                result = {"status": "error", "message": str(e)}
+                        if _current_mode() == "plan" and not tool_obj.readonly:
+                            # Mid-turn safety net: a write tool proposed before
+                            # the user toggled to plan mode must not run.
+                            result = {
+                                "status": "error",
+                                "message": f"Execution of '{tool_name}' blocked in plan mode (write tool).",
+                            }
                         else:
-                            result = {"status": "error", "message": f"Execution of '{tool_name}' cancelled by user (safe mode)."}
+                            should_run = True
+                            if safe and tool_name in DANGEROUS_TOOLS:
+                                print(
+                                    f"\n[DANGER] Tool '{tool_name}' called with: {args_str}",
+                                    file=sys.stderr,
+                                )
+                                print(
+                                    "Proceed? (y/N): ",
+                                    file=sys.stderr, end='', flush=True,
+                                )
+                                try:
+                                    with _hotkey_suspended():
+                                        answer = sys.stdin.readline().strip().lower()
+                                except EOFError:
+                                    answer = 'n'
+                                except KeyboardInterrupt:
+                                    answer = 'n'
+                                should_run = answer == 'y'
+
+                            if should_run:
+                                try:
+                                    raw_result = tool_obj.fn(**arguments)
+                                    if isinstance(raw_result, dict):
+                                        result = raw_result
+                                    else:
+                                        result = {"status": "success", "data": raw_result}
+                                except Exception as e:
+                                    result = {"status": "error", "message": str(e)}
+                            else:
+                                result = {"status": "error", "message": f"Execution of '{tool_name}' cancelled by user (safe mode)."}
                     else:
                         result = {"status": "error", "message": f"unknown tool '{tool_name}'"}
                 except KeyboardInterrupt:

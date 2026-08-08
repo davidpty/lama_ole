@@ -1,5 +1,7 @@
 """Example tool module for lama_ole."""
 
+__tool_readonly__ = True
+
 import os
 from tool_base import tool
 from tools_security.validate_path import validate_path as _validate_path

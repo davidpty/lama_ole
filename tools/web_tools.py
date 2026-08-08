@@ -1,5 +1,7 @@
 """Web tools for lama_ole — fetch URLs and search the web."""
 
+__tool_readonly__ = True
+
 import re
 import urllib.request
 import urllib.error

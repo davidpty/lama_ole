@@ -1,6 +1,8 @@
 """Media understanding tools for lama_ole — image/video/audio comprehension
 via Ollama vision models, Whisper, and OCR."""
 
+__tool_readonly__ = True
+
 import base64
 import os
 import shutil

@@ -49,6 +49,7 @@ class ChatState:
     tools_dir: str = None
     verbose: int = 0
     safe: bool = False
+    mode: str = "build"
     thought_file_handle: object = None
     output_file_handle: object = None
     toolcall_file_handle: object = None
@@ -67,6 +68,7 @@ class ChatState:
     ctx_meter: bool = True
     ctx_max: int = None
     ctx_usage: dict = None
+    _hotkey_listener: object = None
 
     def __post_init__(self):
         if self.ndjson_log_path and self.ndjson_log_file_handle is None:
@@ -108,6 +110,7 @@ class ChatState:
             system_prompt=self.system_prompt,
             skill_text=self.skill_text,
             no_safety_system_prompt=self.no_safety_system_prompt,
+            mode=self.mode,
         )
         for i, m in enumerate(self.messages):
             if m.get("role") == "system":
@@ -119,15 +122,138 @@ class ChatState:
         """Recompute the Ollama tool list from ``loaded_tools``.
 
         Called after every runtime load/unload so the next turn advertises
-        exactly the current set of tools.
+        exactly the current set of tools. In plan mode only read-only tools
+        (from modules marked ``__tool_readonly__``) are advertised.
         """
-        self.ollama_tools = to_ollama_tools(self.loaded_tools) if self.loaded_tools else None
+        if not self.loaded_tools:
+            self.ollama_tools = None
+            return
+        if self.mode == "plan":
+            plan_tools = _plan_readonly_tools(self)
+            self.ollama_tools = to_ollama_tools(plan_tools) if plan_tools else None
+        else:
+            self.ollama_tools = to_ollama_tools(self.loaded_tools)
+
+    # -- mid-turn mode switching ----------------------------------------------
+
+    def toggle_mode(self) -> None:
+        """Flip plan/build mode. Safe to call from the hotkey thread."""
+        target = "plan" if self.mode == "build" else "build"
+        _set_mode(self, target, autosave=False)
+
+    def start_hotkey_listener(self) -> None:
+        if self._hotkey_listener is None:
+            from tool_base.mode_switch import ModeHotkeyListener
+            self._hotkey_listener = ModeHotkeyListener(self.toggle_mode)
+        self._hotkey_listener.start()
+
+    def stop_hotkey_listener(self) -> None:
+        if self._hotkey_listener is not None:
+            self._hotkey_listener.stop()
+
+    def hotkey_pause(self) -> None:
+        """Park the listener + restore canonical stdin (engine prompts)."""
+        if self._hotkey_listener is not None:
+            self._hotkey_listener.pause()
+
+    def hotkey_resume(self) -> None:
+        if self._hotkey_listener is not None:
+            self._hotkey_listener.resume()
+
+    def hotkey_drain(self) -> str:
+        """Text typed mid-turn, for replay at the next prompt."""
+        if self._hotkey_listener is None:
+            return ""
+        return self._hotkey_listener.drain_typeahead()
+
+
+# ---------------------------------------------------------------------------
+# Plan / build mode
+# ---------------------------------------------------------------------------
+
+_MODES = ("build", "plan")
+
+
+def _module_is_readonly(module_name: str) -> bool:
+    """True when a loaded tool module declares itself read-only.
+
+    Read-only modules (e.g. ``tools.dev_tools_readonly``) set a module-level
+    ``__tool_readonly__ = True``; everything else defaults to not read-only so
+    plan mode never exposes a mutating tool accidentally.
+    """
+    mod = sys.modules.get(module_name)
+    if mod is None:
+        return False
+    return bool(getattr(mod, "__tool_readonly__", False))
+
+
+def _plan_readonly_tools(state: ChatState):
+    """Tools from read-only modules, used to advertise tools in plan mode."""
+    tools = []
+    for module_name in state.loaded_tool_modules:
+        if _module_is_readonly(module_name):
+            tools.extend(get_tools_of_module(module_name))
+    return tools
+
+
+def _set_mode(state: ChatState, mode: str, autosave: bool = True) -> None:
+    """Switch the chat agent between build and plan mode.
+
+    Re-composes the system prompt (adds/removes the plan-mode block), filters
+    the advertised tool set to read-only tools, and re-points the Shift+Tab
+    toggle binding so the next keystroke returns to the other mode.
+
+    ``autosave=False`` is used for mid-turn toggles from the hotkey thread so
+    the session file is never written concurrently with the main thread.
+    """
+    if mode not in _MODES:
+        print("Mode must be one of: build, plan")
+        return
+    if state.mode == mode:
+        print(f"Already in {mode} mode.")
+        return
+    state.mode = mode
+    state.apply_skill()
+    state.refresh_ollama_tools()
+    _bind_mode_toggle(state)
+    if autosave:
+        autosave_session(state)
+    print(f"Switched to {mode} mode.")
+
+
+def _mode_label(state: ChatState, use_color: bool) -> str:
+    """Prompt prefix indicating the active mode ('[build] ' / '[plan] ')."""
+    if state.mode == "plan":
+        return color_util.colored("[plan] ", color_util.C_METER_MID, use_color)
+    return color_util.colored("[build] ", color_util.C_METER_LOW, use_color)
+
+
+def _bind_mode_toggle(state: ChatState) -> None:
+    """Bind Shift+Tab to submit /plan or /build, whichever toggles the mode.
+
+    Tab itself stays bound to completion, so the plan/build switch uses
+    Shift+Tab (``ESC [ Z``). The macro first clears the line so a partially
+    typed message is never mangled. The binding is re-pointed after every
+    switch so the same keystroke keeps toggling.
+    """
+    if readline is None:
+        return
+    target = "/plan" if state.mode == "build" else "/build"
+    try:
+        if "libedit" in (readline.__doc__ or ""):
+            readline.parse_and_bind(f'bind -s "^[[Z" "{target}"')
+        else:
+            readline.parse_and_bind(f'"\\e[Z": "\\C-a\\C-k{target}\\n"')
+    except Exception:
+        pass
 
 
 _COMMANDS = [
     "/feed",
     "/clear",
     "/model",
+    "/plan",
+    "/build",
     "/save",
     "/load",
     "/resume",
@@ -235,6 +361,33 @@ def _install_readline_completion() -> None:
         readline.parse_and_bind("bind ^I rl_complete")
     else:
         readline.parse_and_bind("tab: complete")
+
+
+def _install_typeahead_replay(state: ChatState) -> None:
+    """Replay mid-turn typed text into the next prompt's line buffer.
+
+    Text collected by the mode hotkey listener while the model was working is
+    inserted into the next readline line (once, when the hook next fires; the
+    buffer is empty otherwise, so the hook is a harmless no-op between turns).
+    GNU readline only -- libedit / non-tty environments skip the replay and
+    degrade to the swallow behavior.
+    """
+    if readline is None:
+        return
+    if "libedit" in (readline.__doc__ or ""):
+        return
+    if not hasattr(readline, "set_pre_input_hook") or not hasattr(readline, "insert_text"):
+        return
+
+    def _replay():
+        text = state.hotkey_drain()
+        if text:
+            readline.insert_text(text)
+
+    try:
+        readline.set_pre_input_hook(_replay)
+    except Exception:
+        pass
 
 
 # ---------------------------------------------------------------------------
@@ -380,6 +533,7 @@ def _estimate_context_tokens(state: ChatState) -> int:
             system_prompt=state.system_prompt,
             skill_text=state.skill_text,
             no_safety_system_prompt=state.no_safety_system_prompt,
+            mode=state.mode,
         )
         total_chars += len(sp)
     return max(1, total_chars // 4)
@@ -457,6 +611,8 @@ def _estimate_context_breakdown(messages: list, input_tokens: int) -> list:
 def run_chat(state: ChatState):
     print("Chat mode. Type /help for commands.")
     _install_readline_completion()
+    _bind_mode_toggle(state)
+    _install_typeahead_replay(state)
     use_color = color_util.color_mode_enabled(state.color)
     if state.ctx_meter:
         _ensure_ctx_max(state)
@@ -465,10 +621,11 @@ def run_chat(state: ChatState):
         base_prompt += color_util.C_INPUT
 
     while True:
+        prompt = _mode_label(state, use_color)
         if state.ctx_meter:
-            prompt = _ctx_prompt_gauge(state, use_color) + base_prompt
+            prompt += _ctx_prompt_gauge(state, use_color) + base_prompt
         else:
-            prompt = base_prompt
+            prompt += base_prompt
         # Snapshot before reading input so an interrupt either at the prompt or
         # during the turn only rolls back what this iteration added.
         messages_before = len(state.messages)
@@ -501,32 +658,37 @@ def run_chat(state: ChatState):
                 state.chatinput_file_handle.flush()
 
             metrics = {}
-            run_with_tools(
-                client=state.client,
-                model=state.model,
-                messages=state.messages,
-                loaded_tools=state.loaded_tools,
-                ollama_tools=state.ollama_tools,
-                options=state.options,
-                keep_alive=state.keep_alive,
-                show_thinking=state.show_thinking,
-                no_safety_system_prompt=state.no_safety_system_prompt,
-                system_prompt = state.system_prompt,
-                skill_text = state.skill_text,
-                verbose=state.verbose,
-                safe=state.safe,
-                thought_file_handle=state.thought_file_handle,
-                output_file_handle=state.output_file_handle,
-                toolcall_file_handle=state.toolcall_file_handle,
-                chatinput_file_handle=state.chatinput_file_handle,
-                max_tool_rounds=state.max_tool_rounds,
-                max_tool_rounds_continuation=state.max_tool_rounds_continuation,
-                ollama_websearch=state.ollama_websearch,
-                color=state.color,
-                ndjson_log_file_handle=state.ndjson_log_file_handle,
-                state_manager=state.state_manager,
-                metrics=metrics,
-            )
+            state.start_hotkey_listener()
+            try:
+                run_with_tools(
+                    client=state.client,
+                    model=state.model,
+                    messages=state.messages,
+                    loaded_tools=state.loaded_tools,
+                    ollama_tools=state.ollama_tools,
+                    options=state.options,
+                    keep_alive=state.keep_alive,
+                    show_thinking=state.show_thinking,
+                    no_safety_system_prompt=state.no_safety_system_prompt,
+                    system_prompt = state.system_prompt,
+                    skill_text = state.skill_text,
+                    verbose=state.verbose,
+                    safe=state.safe,
+                    thought_file_handle=state.thought_file_handle,
+                    output_file_handle=state.output_file_handle,
+                    toolcall_file_handle=state.toolcall_file_handle,
+                    chatinput_file_handle=state.chatinput_file_handle,
+                    max_tool_rounds=state.max_tool_rounds,
+                    max_tool_rounds_continuation=state.max_tool_rounds_continuation,
+                    ollama_websearch=state.ollama_websearch,
+                    color=state.color,
+                    ndjson_log_file_handle=state.ndjson_log_file_handle,
+                    state_manager=state.state_manager,
+                    metrics=metrics,
+                    mode_state=state,
+                )
+            finally:
+                state.stop_hotkey_listener()
             state.ctx_usage = metrics
             autosave_session(state)
         except EOFError:
@@ -588,6 +750,12 @@ def _handle_command(line: str, state: ChatState) -> bool:
             state.model = arg
             print(f"Switched to model: {arg}")
 
+    elif cmd == "/plan":
+        _set_mode(state, "plan")
+
+    elif cmd == "/build":
+        _set_mode(state, "build")
+
     elif cmd == "/save":
         _cmd_save(arg, state)
 
@@ -624,6 +792,8 @@ def _show_help():
     print("  /feed <path>    Read a file and inject its content as a message")
     print("  /clear          Clear the conversation history (previous session is preserved)")
     print("  /model <name>   Switch to a different model")
+    print("  /plan           Switch to plan mode (read-only tools, no changes)")
+    print("  /build          Switch to build mode (full tools, changes allowed)")
     print("  /save <path>    Save the conversation to a JSON file")
     print("  /load <path>    Load a conversation from a JSON file")
     print("  /resume [id|title]  Resume a saved session (with no arg: picker; with a match: direct)")
@@ -764,6 +934,8 @@ def serialize_session(
     title = _session_title(state)
     if title:
         data["title"] = title
+    if state.mode != "build":
+        data["mode"] = state.mode
     if session_id:
         data["session_id"] = session_id
     if cwd:
@@ -794,6 +966,10 @@ def apply_session(state: ChatState, data: dict, source: str = "session") -> None
         state.session_created_at = data["created_at"]
     if "model" in data:
         state.model = data["model"]
+    # Mode must be restored before tool reload so refresh_ollama_tools()
+    # applies the plan-mode read-only filter to the reloaded tools.
+    if "mode" in data and data.get("mode") in _MODES:
+        state.mode = data["mode"]
     if "loaded_tool_modules" in data:
         module_names = data["loaded_tool_modules"]
         state.loaded_tools = []
@@ -811,6 +987,7 @@ def apply_session(state: ChatState, data: dict, source: str = "session") -> None
         state.skill_text = data.get("skill_text")
     if "system_prompt" in data:
         state.system_prompt = data["system_prompt"]
+    _bind_mode_toggle(state)
 
 
 def _cmd_save(path: str, state: ChatState):

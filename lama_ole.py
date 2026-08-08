@@ -349,6 +349,16 @@ def build_parser():
         help="Enable user confirmation before dangerous tool operations"
     )
 
+    # Parameter: mode
+    parser.add_argument(
+        "--mode",
+        type=str,
+        default=_env_choice("LAMA_OLE_MODE", "build", ["build", "plan"]),
+        choices=["build", "plan"],
+        help="Chat agent mode: 'build' (full tools, changes allowed) or "
+             "'plan' (read-only tools, no changes)"
+    )
+
     # Parameter: tool (repeatable)
     parser.add_argument(
         "--tool",
@@ -833,6 +843,7 @@ def main():
                 skill_text= skill_text,
                 verbose=args.verbose,
                 safe=args.safe,
+                mode=args.mode,
                 thought_file_handle=thought_file_handle,
                 output_file_handle=output_file_handle,
                 toolcall_file_handle=toolcall_file_handle,
@@ -876,6 +887,7 @@ def main():
                         skill_text= skill_text,
                         verbose=args.verbose,
                         safe=args.safe,
+                        mode=args.mode,
                         thought_file_handle=thought_file_handle,
                         output_file_handle=output_file_handle,
                         toolcall_file_handle=toolcall_file_handle,
@@ -919,6 +931,7 @@ def main():
                 skill_text= skill_text,
                 verbose=args.verbose,
                 safe=args.safe,
+                mode=args.mode,
                 thought_file_handle=thought_file_handle,
                 output_file_handle=output_file_handle,
                 toolcall_file_handle=toolcall_file_handle,

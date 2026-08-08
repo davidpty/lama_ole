@@ -23,6 +23,8 @@ lama_ole.py --host localhost -m gemma4:26b-a4b-it-qat --chat -t -v --tool tools.
   message) as its own NDJSON line (`--logndjson`).
 - **Flexible Input** — Direct string (`-i`), file (`-f`), or stdin (`--stdin`).
 - **Chat Mode** — Multi-turn REPL with slash commands (`--chat`).
+- **Plan / Build Modes** — Switch between an opencode-style read-only *plan*
+  mode and the full *build* mode with **Shift+Tab**, `/plan`, or `/build`.
 - **Tool Calling** — Load Python modules as callable tools (`--tool`).
 - **Tool Documentation** — Inspect loaded tools, their signatures, and
   environment variables (`--help-tools`).
@@ -272,6 +274,8 @@ In chat mode (`--chat`), lines starting with `/` are commands:
 | `/feed <path>` | Read a file and send its content as a message |
 | `/clear` | Clear the conversation history (the previous session is preserved and can be restored with `/resume`) |
 | `/model <name>` | Switch to a different model |
+| `/plan` | Switch to plan mode (read-only tools only, no changes) |
+| `/build` | Switch to build mode (full tools, changes allowed) |
 | `/save <path>` | Save the conversation to a JSON file (model, messages, active skill, system prompt and loaded toolsets) |
 | `/load <path>` | Load a conversation from a JSON file (restores the active skill, system prompt and re-loads toolsets) |
 | `/resume [match]` | Resume a saved session; without an argument it lists sessions and prompts, with a session-id or title substring it loads directly |
@@ -318,6 +322,32 @@ Tab completion is enabled in interactive mode: commands, `/tools`, `/skill` and
 `/systemprompt` subcommands, and file paths (for `/feed`, `/save`, `/load`,
 `/skill load` and `/systemprompt`) are completed with Tab. Completion needs the
 `readline` module and is skipped automatically when stdin is not a terminal.
+
+### Plan / build modes
+
+The chat agent runs in one of two opencode-style modes:
+
+* **Build** (default) — full access to every loaded tool; changes are allowed.
+* **Plan** — read-only: the model is told to analyze and plan without making
+  changes, and only tools from modules marked read-only (`__tool_readonly__ =
+  True`, e.g. `tools.dev_tools_readonly`, `tools.web_tools`,
+  `tools.media_understanding_tools`) are advertised. Mutating toolsets remain
+  loaded but are hidden from the model until you switch back.
+
+Switch modes with **Shift+Tab** (a single keystroke that toggles between `/plan`
+and `/build`), or type `/plan` / `/build`. The prompt always shows the current
+mode: a green `[build] ` or a yellow `[plan] `. The mode is remembered in saved
+sessions, so resuming a plan session stays in plan mode. Start in a given mode
+with `--mode plan` (`LAMA_OLE_MODE=plan`). To make your own tool module
+plan-safe, add a module-level `__tool_readonly__ = True`.
+
+**Shift+Tab also works mid-turn** — while the model is streaming or a tool is
+running, it switches mode without interrupting the current response. The switch
+takes effect immediately for tool execution: any write tool that arrives after
+the switch is blocked (the error is fed back to the model) and the next
+tool-calling round advertises only read-only tools. Printable keys typed
+mid-turn are captured and replayed into the next prompt's line buffer; Enter
+and arrow keys are ignored while the model is working.
 
 ## Sessions
 
@@ -383,6 +413,7 @@ and `/load`.
 | `--vision_model MODEL` | Vision model for media tools (repeatable) | (auto-detect) |
 | `--help-tools` | Show loaded tool documentation and exit | |
 | `--safe` | Confirm before dangerous tool operations | |
+| `--mode MODE` | Chat agent mode: `build` or `plan` | `build` |
 | `--max_tool_rounds N` | Max tool-calling rounds | (no limit) |
 | `--max_tool_rounds_continuation` | Behavior at limit: `ask` or `fallback` | `ask` |
 | `-l, --list` | List all available models | |
@@ -522,6 +553,7 @@ the configured default.
 | `LAMA_OLE_CHAT` | boolean | `--chat` / `--no-chat` |
 | `LAMA_OLE_THINKING` | boolean | `-t, --thinking` / `--no-thinking` |
 | `LAMA_OLE_SAFE` | boolean | `--safe` / `--no-safe` |
+| `LAMA_OLE_MODE` | string | `--mode` (`build` or `plan`) |
 | `LAMA_OLE_OLLAMA_WEBSRCH` | boolean | `--ollama_websearch` / `--no-ollama_websearch` |
 | `LAMA_OLE_VERBOSE` | integer | `-v, --verbose` (CLI `-v` adds to it) |
 | `LAMA_OLE_COLOR` | string | `--color` (`auto`, `always`, `never` or `none`) |

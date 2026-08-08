@@ -208,6 +208,7 @@ def test_main_initial_content_interrupt_falls_back_to_repl(monkeypatch, capsys):
         [
             "lama_ole.py",
             "--chat",
+            "--no-resume",
             "-m",
             "testmodel",
             "-i",

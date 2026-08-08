@@ -1,5 +1,7 @@
 """Readonly tools for lama_ole — filesystem, code, and git operations."""
 
+__tool_readonly__ = True
+
 import os
 import re
 import glob as glob_mod
