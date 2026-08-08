@@ -85,7 +85,7 @@ class SessionSerializeTest(unittest.TestCase):
         state.messages = [
             {"role": "system", "content": "secret system prompt"},
             {"role": "user", "content": "hi"},
-            {"role": "assistant", "content": "hello there"},
+            {"role": "assistant", "content": "hello there", "thinking": "inner monologue"},
             {
                 "role": "assistant",
                 "content": None,
@@ -101,11 +101,26 @@ class SessionSerializeTest(unittest.TestCase):
             chat._replay_history(state, use_color=False)
         out = buf.getvalue()
         self.assertNotIn("secret system prompt", out)
+        self.assertNotIn("inner monologue", out)
         self.assertIn(">>> hi\n", out)
         self.assertIn("hello there\n", out)
         self.assertIn("it is sunny\n", out)
         self.assertNotIn("[tool:", out)
         self.assertNotIn("[tool result:", out)
+
+    def test_replay_history_shows_thinking_when_enabled(self):
+        state = _make_state(show_thinking=True)
+        state.messages = [
+            {"role": "user", "content": "hi"},
+            {"role": "assistant", "content": "answer", "thinking": "hmm"},
+        ]
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            chat._replay_history(state, use_color=True)
+        out = buf.getvalue()
+        self.assertIn("hmm", out)
+        self.assertIn("answer", out)
+        self.assertIn("\x01\033[", out)
 
     def test_replay_history_verbose_shows_tool_markers(self):
         state = _make_state(verbose=1)
@@ -181,6 +196,17 @@ class SessionSerializeTest(unittest.TestCase):
         self.assertEqual(state2.session_id, "abc")
         self.assertEqual(state2.session_created_at, 1.0)
         self.assertEqual(state2.messages, state.messages)
+
+    def test_round_trip_preserves_thinking(self):
+        state = _make_state()
+        state.messages = [
+            {"role": "user", "content": "hi"},
+            {"role": "assistant", "content": "answer", "thinking": "hmm"},
+        ]
+        data = chat.serialize_session(state, session_id="abc")
+        state2 = _make_state()
+        chat.apply_session(state2, data)
+        self.assertEqual(state2.messages[1]["thinking"], "hmm")
 
 
 class SessionStoreTest(unittest.TestCase):

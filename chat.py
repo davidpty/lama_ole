@@ -1007,9 +1007,11 @@ def _print_session(index: int, data: dict, current: bool = True) -> None:
 def _replay_history(state: ChatState, use_color: bool) -> None:
     """Replay the conversation so a resumed session reads like the original.
 
-    System messages (safety prompt / skills) are skipped. Tool call/result
-    markers are shown only when ``verbose >= 1``, mirroring their live
-    visibility in a normal run.
+    System messages (safety prompt / skills) are skipped. Stored thinking is
+    replayed only when ``show_thinking`` is on (it is captured in the first
+    place only when ``-t`` was set during generation), mirroring live
+    visibility. Tool call/result markers are shown only when ``verbose >= 1``,
+    mirroring their live visibility in a normal run.
     """
     verbose = state.verbose or 0
     for m in state.messages:
@@ -1020,6 +1022,9 @@ def _replay_history(state: ChatState, use_color: bool) -> None:
         if role == "user":
             print(color_util.colored(f">>> {content}", color_util.C_PROMPT, use_color))
         elif role == "assistant":
+            if state.show_thinking and m.get("thinking"):
+                print(color_util.colored(m["thinking"], color_util.C_THINK, use_color))
+                print()
             tool_calls = m.get("tool_calls") or []
             if tool_calls:
                 if verbose >= 1:

@@ -335,8 +335,9 @@ and `/load`.
 * **Auto-resume**: starting `--chat` restores the most recent session for the
   current directory and prints a notice. The restored conversation is then
   replayed (user prompts and assistant replies, in their original colors) so
-  it reads like you never left; tool call/result markers are replayed only in
-  verbose mode, matching their live visibility. If the session model differs
+  it reads like you never left; thinking captured with `-t` is replayed only
+  when `-t` is on, and tool call/result markers only in verbose mode — both
+  matching their live visibility. If the session model differs
   from the CLI `-m`, you are asked which to keep (session / CLI / abort).
   `/resume` and `/load` replay the history the same way.
 * **Opt out**: the two behaviors are independent toggles, both on by default:

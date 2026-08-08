@@ -236,11 +236,12 @@ def run_with_tools(
 
         response_content = ""
         response_tool_calls = None
+        think_text = ""
 
         try:
             stream = client.chat(
                 model=model,
-                messages=messages,
+                messages=[{k: v for k, v in m.items() if k != "thinking"} for m in messages],
                 tools=ollama_tools,
                 stream=True,
                 options=options,
@@ -260,6 +261,7 @@ def run_with_tools(
                         _log_chunk(msg, file=sys.stderr)
 
                     if msg.thinking:
+                        think_text += msg.thinking
                         if not think_state:
                             think_state = True
                             state_manager.transition_to(ExecutionState.THINKING)
@@ -332,6 +334,8 @@ def run_with_tools(
                     for tc in response_tool_calls
                 ],
             }
+            if show_thinking and think_text.strip():
+                assistant_msg["thinking"] = think_text
             messages.append(assistant_msg)
             if ndjson_log_file_handle:
                 from .logging import _log_ndjson_message
@@ -470,6 +474,8 @@ def run_with_tools(
             tool_rounds += 1
         else:
             assistant_msg = {"role": "assistant", "content": response_content}
+            if show_thinking and think_text.strip():
+                assistant_msg["thinking"] = think_text
             messages.append(assistant_msg)
             if ndjson_log_file_handle:
                 from .logging import _log_ndjson_message
