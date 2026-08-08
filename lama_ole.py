@@ -323,6 +323,16 @@ def build_parser():
              "turn and on exit (use --no-autosave to stop writing session files)"
     )
 
+    # Parameter: show diff (default on)
+    parser.add_argument(
+        "--diff",
+        action=argparse.BooleanOptionalAction,
+        dest="show_diff",
+        default=_env_bool("LAMA_OLE_SHOW_DIFF", True),
+        help="Show a colored unified diff of each file write (edit/create/"
+             "append/apply_patch) in the output (use --no-diff to hide it)"
+    )
+
     # Parameter: color
     parser.add_argument(
         "--color",
@@ -844,6 +854,7 @@ def main():
                 verbose=args.verbose,
                 safe=args.safe,
                 mode=args.mode,
+                show_diff=args.show_diff,
                 thought_file_handle=thought_file_handle,
                 output_file_handle=output_file_handle,
                 toolcall_file_handle=toolcall_file_handle,
@@ -888,6 +899,7 @@ def main():
                         verbose=args.verbose,
                         safe=args.safe,
                         mode=args.mode,
+                        show_diff=args.show_diff,
                         thought_file_handle=thought_file_handle,
                         output_file_handle=output_file_handle,
                         toolcall_file_handle=toolcall_file_handle,
@@ -932,6 +944,7 @@ def main():
                 verbose=args.verbose,
                 safe=args.safe,
                 mode=args.mode,
+                show_diff=args.show_diff,
                 thought_file_handle=thought_file_handle,
                 output_file_handle=output_file_handle,
                 toolcall_file_handle=toolcall_file_handle,

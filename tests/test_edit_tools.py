@@ -3,6 +3,7 @@ import os
 import tempfile
 import shutil
 import sys
+import contextlib
 
 current_file = os.path.abspath(__file__)
 lama_ole_dir = os.path.abspath(os.path.join(os.path.dirname(current_file), ".."))
@@ -15,7 +16,17 @@ from tools_security.validate_path import register_basepath
 
 register_basepath("/tmp")
 
-from tools.edit import edit
+from tools.edit import edit, create_new_file, makedirs
+
+
+@contextlib.contextmanager
+def _cwd(path):
+    old = os.getcwd()
+    os.chdir(path)
+    try:
+        yield
+    finally:
+        os.chdir(old)
 
 class TestEditTool(unittest.TestCase):
     def setUp(self):
@@ -38,8 +49,14 @@ class TestEditTool(unittest.TestCase):
         result = edit(self.test_file_path, search_str, replace_str)
         
         # Verify return message
-        # self.assertIn( {'status': 'success', 'data': 'Successfully applied patch to '+ self.test_file_path}, result)
-        self.assertEqual( {'status': 'success', 'data': 'Successfully applied patch to '+ self.test_file_path + '.'}, result)
+        self.assertEqual(result["status"], "success")
+        self.assertEqual(
+            result["data"],
+            "Successfully applied patch to " + self.test_file_path + ".",
+        )
+        self.assertEqual(result["file"], self.test_file_path)
+        self.assertIn("-Hello world!", result["diff"])
+        self.assertIn("+Hello universe!", result["diff"])
         
         # Verify file content change
         with open(self.test_file_path, "r", encoding="utf-8") as f:
@@ -62,6 +79,29 @@ class TestEditTool(unittest.TestCase):
         result = edit(self.test_file_path, search_str, replace_str)
         
         self.assertEqual( {'status': 'error', 'message': ['Error: search string matches not exactly 1 time :', 2]} , result)
+#
+    def test_create_new_file_bare_filename(self):
+        """Bare relative filenames must not crash (regression: makedirs(''))."""
+        with _cwd(self.test_dir):
+            result = create_new_file("bare.txt", "hello\n")
+        self.assertEqual(result["status"], "success")
+        self.assertEqual(result["file"], "bare.txt")
+        self.assertIn("+hello", result["diff"])
+        with open(os.path.join(self.test_dir, "bare.txt"), "r", encoding="utf-8") as f:
+            self.assertEqual(f.read(), "hello\n")
+
+    def test_create_new_file_nested_dirs(self):
+        """Missing parent directories are created automatically."""
+        with _cwd(self.test_dir):
+            result = create_new_file("a/b/c.txt", "nested\n")
+        self.assertEqual(result["status"], "success")
+        with open(os.path.join(self.test_dir, "a", "b", "c.txt"), "r", encoding="utf-8") as f:
+            self.assertEqual(f.read(), "nested\n")
+
+    def test_makedirs_empty_path(self):
+        """Empty/whitespace paths must be refused, not crash."""
+        self.assertEqual(makedirs("")["status"], "error")
+        self.assertEqual(makedirs("   ")["status"], "error")
 # 
 #     def test_edit_error_zero_matches(self):
 #         """Test error when the search string is not found."""

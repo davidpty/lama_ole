@@ -26,6 +26,7 @@ from tool_base import (
     get_tools_of_module,
     peek_tools_of_module,
 )
+from tool_base.engine import _print_diff_block
 
 import color_util
 
@@ -50,6 +51,7 @@ class ChatState:
     verbose: int = 0
     safe: bool = False
     mode: str = "build"
+    show_diff: bool = True
     thought_file_handle: object = None
     output_file_handle: object = None
     toolcall_file_handle: object = None
@@ -686,6 +688,7 @@ def run_chat(state: ChatState):
                     state_manager=state.state_manager,
                     metrics=metrics,
                     mode_state=state,
+                    show_diff=state.show_diff,
                 )
             finally:
                 state.stop_hotkey_listener()
@@ -901,6 +904,7 @@ def _cmd_feed(path: str, state: ChatState):
             ndjson_log_file_handle=state.ndjson_log_file_handle,
             state_manager=state.state_manager,
             metrics=metrics,
+            show_diff=state.show_diff,
         )
         state.ctx_usage = metrics
         autosave_session(state)
@@ -1195,7 +1199,8 @@ def _replay_history(state: ChatState, use_color: bool) -> None:
     replayed only when ``show_thinking`` is on (it is captured in the first
     place only when ``-t`` was set during generation), mirroring live
     visibility. Tool call/result markers are shown only when ``verbose >= 1``,
-    mirroring their live visibility in a normal run.
+    mirroring their live visibility in a normal run. Stored edit diffs are
+    replayed when ``show_diff`` is on, mirroring live edit display.
     """
     verbose = state.verbose or 0
     for m in state.messages:
@@ -1226,8 +1231,15 @@ def _replay_history(state: ChatState, use_color: bool) -> None:
                         print(color_util.colored(f"[tool: {name}({args_str})]", color_util.C_OUTPUT, use_color))
             elif content:
                 print(color_util.colored(content, color_util.C_OUTPUT, use_color))
-        elif role == "tool" and verbose >= 1:
-            print(color_util.colored(f"[tool result: {m.get('tool_name') or '?'}]", color_util.C_OUTPUT, use_color))
+        elif role == "tool":
+            if verbose >= 1:
+                print(color_util.colored(f"[tool result: {m.get('tool_name') or '?'}]", color_util.C_OUTPUT, use_color))
+            if state.show_diff and m.get("diff"):
+                _print_diff_block(
+                    m.get("file") or m.get("tool_name") or "?",
+                    m.get("diff") or "",
+                    use_color,
+                )
 
 
 def _resume_into_state(state: ChatState, path: str, data: dict) -> None:

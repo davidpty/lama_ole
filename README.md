@@ -105,6 +105,28 @@ python3 lama_ole.py -m llama3.2:3b -i "What's the weather in Paris?" \
 python3 lama_ole.py --chat -m llama3.2:3b --tool tools.example_tools
 ```
 
+### Seeing What Was Edited
+
+Every file write made by a tool (edit, create_new_file, append_to_file,
+apply_patch) prints a colored unified diff in the output, so you can see
+exactly what changed:
+
+```bash
+[edit: src/foo.py] +3 -1
+--- src/foo.py
++++ src/foo.py
+@@ -12,3 +12,5 @@
+ old line
++new line
+```
+
+Diff display is on by default. Disable it with `--no-diff`, or configure it
+via the env file (`~/.config/lama_ole/lama_ole.env` or `./lama_ole.env`):
+
+```ini
+LAMA_OLE_SHOW_DIFF=false
+```
+
 ### Inspecting Tools
 
 Use `--help-tools` to see all loaded tools, their signatures, and which

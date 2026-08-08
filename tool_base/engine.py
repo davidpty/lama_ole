@@ -50,6 +50,45 @@ def _entropy_check_tool_result(result, tool_name) -> None:
             result["data"] = str(content)[:1000] + "... [TRUNCATED BY ENTROPY CHECK]"
 
 
+_MAX_DIFF_LINES = 200
+
+
+def _print_diff_block(file, diff, use_color) -> None:
+    """Print a colored unified diff block to stdout (mirrors opencode's edit card)."""
+    if not diff:
+        return
+    lines = diff.split("\n")
+    additions = 0
+    deletions = 0
+    for line in lines:
+        if line.startswith("+") and not line.startswith("+++"):
+            additions += 1
+        elif line.startswith("-") and not line.startswith("---"):
+            deletions += 1
+
+    if len(lines) > _MAX_DIFF_LINES + 2:
+        shown = lines[:_MAX_DIFF_LINES]
+        truncated = True
+    else:
+        shown = lines
+        truncated = False
+
+    header = f"[edit: {file}] +{additions} -{deletions}"
+    print(color_util.colored(header, color_util.C_PROMPT, use_color))
+    for line in shown:
+        if line.startswith("+++") or line.startswith("---") or line.startswith("@@"):
+            color = color_util.C_METER_MID
+        elif line.startswith("+"):
+            color = color_util.C_METER_LOW
+        elif line.startswith("-"):
+            color = color_util.C_METER_HIGH
+        else:
+            color = color_util.C_THINK
+        print(color_util.colored(line, color, use_color))
+    if truncated:
+        print(color_util.colored(f"... diff truncated ({len(lines) - _MAX_DIFF_LINES} lines omitted)", color_util.C_THINK, use_color))
+
+
 def compose_system_prompt(
     system_prompt: Optional[str] = None,
     skill_text: Optional[str] = None,
@@ -112,6 +151,7 @@ def run_with_tools(
     state_manager=None,
     metrics: Optional[dict] = None,
     mode_state=None,
+    show_diff: bool = True,
 ):
     from .loop_states import ExecutionState, StateManager, ExecutionInterrupted
     from .logging import StateLogger
@@ -481,6 +521,13 @@ def run_with_tools(
                         flush=True,
                     )
 
+                if show_diff and isinstance(result, dict):
+                    _print_diff_block(
+                        result.get("file") or tool_name,
+                        result.get("diff") or "",
+                        use_color,
+                    )
+
                 # --- NEW NONCE LOGIC START ---
                 nonce = create_uuid_15()
                 if isinstance(result, dict) and result.get("status") == "success":
@@ -514,6 +561,8 @@ def run_with_tools(
                     "role": "tool",
                     "content": wrapped,
                     "tool_name": tool_name,
+                    "diff": result.get("diff") if isinstance(result, dict) else None,
+                    "file": result.get("file") if isinstance(result, dict) else None,
                 }
                 messages.append(tool_msg)
                 if ndjson_log_file_handle:
