@@ -2,24 +2,12 @@
 
 
 import os
-from typing import Optional
 from tool_base import tool
 import re
 import glob as glob_mod
+from tools_security.validate_path import validate_path as _validate_path
 
 read_lines_tuple3 = None
-
-# Reusing safety logic from the provided example
-def _validate_path(path: str) -> Optional[str]:
-    import pathlib
-    parts = pathlib.Path(path).parts
-    if ".." in parts:
-        return f"Blocked by safety check: path contains '..' traversal: {path}"
-
-    normalized = os.path.normpath(path)
-    # The .. check above handles the requirement. 
-    # We can keep the rest for consistency if needed, but it's mostly redundant now.
-    return None
 
 @tool(description="Returns a description of this module.")
 def edit_help():

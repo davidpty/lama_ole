@@ -7,6 +7,7 @@ import subprocess
 import tempfile
 
 from tool_base import tool
+from tools_security.validate_path import validate_path as _validate_path
 
 try:
     import pydub
@@ -20,13 +21,6 @@ _FFPROBE = shutil.which("ffprobe")
 
 def _no_ffmpeg():
     return "Error: ffmpeg is not installed (required for audio tools)"
-
-
-def _validate_path(path):
-    normalized = os.path.normpath(path)
-    if ".." in normalized.split(os.sep):
-        return f"Blocked: path contains '..' traversal: {path}"
-    return None
 
 
 def _ensure_parent(path):

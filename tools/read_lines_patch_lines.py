@@ -6,18 +6,9 @@ from typing import Optional
 from tool_base import tool
 import re
 import glob as glob_mod
+from tools_security.validate_path import validate_path as _validate_path
 
 read_lines_tuple3 = None
-
-# Reusing safety logic from the provided example
-def _validate_path(path: str) -> Optional[str]:
-    normalized = os.path.normpath(path)
-    parts = normalized.split(os.sep)
-    if ".." in parts:
-        return (
-            f"Blocked by safety check: path contains '..' traversal: {path}"
-        )
-    return None
 
 
 def _entropy_reason(path: str) -> Optional[str]:

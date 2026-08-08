@@ -19,6 +19,12 @@ lama_ole_dir = os.path.abspath(os.path.join(os.path.dirname(current_file), "..")
 if lama_ole_dir not in sys.path:
     sys.path.insert(0, lama_ole_dir)
 
+# Register /tmp as an allowed basepath so that absolute paths from
+# tempfile.mkdtemp() and tempfile.NamedTemporaryFile() pass validate_path.
+from tools_security.validate_path import register_basepath
+
+register_basepath("/tmp")
+
 from tools_insecure_outdated_deprecated.dev_tools_safer import read_file as safer_read_file
 from tools_insecure_outdated_deprecated.dev_tools_safer import grep as safer_grep
 from tools.dev_tools_readonly import read_file as readonly_read_file

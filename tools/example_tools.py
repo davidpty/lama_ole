@@ -1,6 +1,8 @@
 """Example tool module for lama_ole."""
 
+import os
 from tool_base import tool
+from tools_security.validate_path import validate_path as _validate_path
 
 
 @tool(description="Get the current weather for a city")
@@ -17,6 +19,10 @@ def calculate(expression: str) -> str:
 
 @tool(description="Read the contents of a file")
 def read_file(path: str) -> str:
+    safety_error = _validate_path(path)
+    if safety_error:
+        return {"status": "error", "message": [safety_error]}
+
     with open(path, "rb") as f:
         raw_content = f.read()
 

@@ -4,6 +4,7 @@ import json
 import os
 
 from tool_base import tool
+from tools_security.validate_path import validate_path as _validate_path
 
 try:
     from PIL import Image, ImageFilter as PILFilter, ImageDraw, ImageFont
@@ -27,13 +28,6 @@ else:
 
 def _no_pillow():
     return "Error: Pillow is not installed. Run: pip install Pillow"
-
-
-def _validate_path(path):
-    normalized = os.path.normpath(path)
-    if ".." in normalized.split(os.sep):
-        return f"Blocked: path contains '..' traversal: {path}"
-    return None
 
 
 def _resolve_out(path, suffix, ext=None):

@@ -1,17 +1,8 @@
 import os
 import subprocess
-from typing import Any, Dict, Optional
+from typing import Any, Dict
 from tool_base import tool
-
-
-def _validate_path(path: str) -> Optional[str]:
-    if os.path.isabs(os.path.normpath(path)):
-        return f"Blocked by safety check: only relative paths are allowed: {path}"
-    normalized = os.path.normpath(path)
-    parts = normalized.split(os.sep)
-    if ".." in parts:
-        return f"Blocked by safety check: path contains '..' traversal: {path}"
-    return None
+from tools_security.validate_path import validate_path as _validate_path
 
 
 def _run_command(cmd: str, cwd: str) -> Dict[str, Any]:

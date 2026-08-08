@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Optional, Any, Dict
 
 from tool_base import tool
+from tools_security.validate_path import validate_path as _validate_path
 
 
 _DANGEROUS_PATTERNS = [
@@ -33,16 +34,6 @@ def _validate_command(command: str) -> Optional[str]:
                 f"Blocked by safety check: command matches dangerous "
                 f"pattern: {pattern}"
             )
-    return None
-
-
-def _validate_path(path: str) -> Optional[str]:
-    normalized = os.path.normpath(path)
-    parts = normalized.split(os.sep)
-    if ".." in parts:
-        return (
-            f"Blocked by safety check: path contains '..' traversal: {path}"
-        )
     return None
 
 

@@ -8,6 +8,7 @@ import subprocess
 import tempfile
 
 from tool_base import get_ollama_host, get_vision_models, tool
+from tools_security.validate_path import validate_path as _validate_path
 
 
 __tool_env__ = {
@@ -70,13 +71,6 @@ def _find_model(client, candidates, default_name):
 
 def _no_ollama():
     return "Error: ollama library not installed. Run: pip install ollama"
-
-
-def _validate_path(path):
-    normalized = os.path.normpath(path)
-    if ".." in normalized.split(os.sep):
-        return f"Blocked: path contains '..' traversal: {path}"
-    return None
 
 
 def _image_to_base64(path):
