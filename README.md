@@ -333,8 +333,12 @@ and `/load`.
   `<session-id>.json` file with 0600 permissions. The real directory path is
   stored inside the file.
 * **Auto-resume**: starting `--chat` restores the most recent session for the
-  current directory and prints a notice. If the session model differs from
-  the CLI `-m`, you are asked which to keep (session / CLI / abort).
+  current directory and prints a notice. The restored conversation is then
+  replayed (user prompts and assistant replies, in their original colors) so
+  it reads like you never left; tool call/result markers are replayed only in
+  verbose mode, matching their live visibility. If the session model differs
+  from the CLI `-m`, you are asked which to keep (session / CLI / abort).
+  `/resume` and `/load` replay the history the same way.
 * **Opt out**: the two behaviors are independent toggles, both on by default:
   * `--no-resume` (or `LAMA_OLE_RESUME=false`) disables auto-loading.
   * `--no-autosave` (or `LAMA_OLE_AUTOSAVE=false`) disables writing session

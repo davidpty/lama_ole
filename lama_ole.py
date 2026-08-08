@@ -34,6 +34,7 @@ from tool_base import (
 import color_util
 from chat import (
     ChatState,
+    _replay_history,
     apply_session,
     autosave_session,
     find_recent_session,
@@ -593,6 +594,7 @@ def _resume_session_into(state, resume):
         f"Resumed session '{title}' ({n} messages). Use --no-resume to start fresh.",
         file=sys.stderr,
     )
+    _replay_history(state, color_util.color_mode_enabled(state.color))
 
 
 def main():

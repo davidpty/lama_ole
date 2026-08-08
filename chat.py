@@ -840,6 +840,7 @@ def _cmd_load(path: str, state: ChatState):
         return
     apply_session(state, data, source=path)
     print(f"Loaded conversation with {len(state.messages)} messages")
+    _replay_history(state, color_util.color_mode_enabled(state.color))
 
 
 # ---------------------------------------------------------------------------
@@ -1003,6 +1004,40 @@ def _print_session(index: int, data: dict, current: bool = True) -> None:
     print(f"  {index}. [{ts}] {title}  ({model}, {n} msgs, {sid}){marker}")
 
 
+def _replay_history(state: ChatState, use_color: bool) -> None:
+    """Replay the conversation so a resumed session reads like the original.
+
+    System messages (safety prompt / skills) are skipped. Tool call/result
+    markers are shown only when ``verbose >= 1``, mirroring their live
+    visibility in a normal run.
+    """
+    verbose = state.verbose or 0
+    for m in state.messages:
+        role = m.get("role")
+        content = m.get("content") or ""
+        if role == "system":
+            continue
+        if role == "user":
+            print(color_util.colored(f">>> {content}", color_util.C_PROMPT, use_color))
+        elif role == "assistant":
+            tool_calls = m.get("tool_calls") or []
+            if tool_calls:
+                if verbose >= 1:
+                    for tc in tool_calls:
+                        fn = tc.get("function", {})
+                        name = fn.get("name") or "?"
+                        arguments = fn.get("arguments") or {}
+                        if isinstance(arguments, dict):
+                            args_str = ", ".join(f"{k}={v!r}" for k, v in arguments.items())
+                        else:
+                            args_str = str(arguments)
+                        print(color_util.colored(f"[tool: {name}({args_str})]", color_util.C_OUTPUT, use_color))
+            elif content:
+                print(color_util.colored(content, color_util.C_OUTPUT, use_color))
+        elif role == "tool" and verbose >= 1:
+            print(color_util.colored(f"[tool result: {m.get('tool_name') or '?'}]", color_util.C_OUTPUT, use_color))
+
+
 def _resume_into_state(state: ChatState, path: str, data: dict) -> None:
     """Load a session into the REPL, re-associating it if it moved."""
     old_cwd = data.get("cwd")
@@ -1026,6 +1061,7 @@ def _resume_into_state(state: ChatState, path: str, data: dict) -> None:
         print(f"Re-associated session from {old_cwd} to {os.getcwd()}.")
     title = data.get("title") or "(untitled)"
     print(f"Resumed session: {title} ({len(state.messages)} messages)")
+    _replay_history(state, color_util.color_mode_enabled(state.color))
 
 
 def _cmd_resume(arg: str, state: ChatState):

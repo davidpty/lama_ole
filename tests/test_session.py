@@ -80,6 +80,60 @@ class SessionSerializeTest(unittest.TestCase):
         )
         self.assertNotEqual(chat._encode_cwd("/p/a"), chat._encode_cwd("/p/a_b"))
 
+    def test_replay_history(self):
+        state = _make_state()
+        state.messages = [
+            {"role": "system", "content": "secret system prompt"},
+            {"role": "user", "content": "hi"},
+            {"role": "assistant", "content": "hello there"},
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [
+                    {"function": {"name": "get_weather", "arguments": {"city": "Berlin"}}}
+                ],
+            },
+            {"role": "tool", "content": "[data from ...]", "tool_name": "get_weather"},
+            {"role": "assistant", "content": "it is sunny"},
+        ]
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            chat._replay_history(state, use_color=False)
+        out = buf.getvalue()
+        self.assertNotIn("secret system prompt", out)
+        self.assertIn(">>> hi\n", out)
+        self.assertIn("hello there\n", out)
+        self.assertIn("it is sunny\n", out)
+        self.assertNotIn("[tool:", out)
+        self.assertNotIn("[tool result:", out)
+
+    def test_replay_history_verbose_shows_tool_markers(self):
+        state = _make_state(verbose=1)
+        state.messages = [
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [
+                    {"function": {"name": "get_weather", "arguments": {"city": "Berlin"}}}
+                ],
+            },
+            {"role": "tool", "content": "[data from ...]", "tool_name": "get_weather"},
+        ]
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            chat._replay_history(state, use_color=False)
+        out = buf.getvalue()
+        self.assertIn("[tool: get_weather(city='Berlin')]", out)
+        self.assertIn("[tool result: get_weather]", out)
+
+    def test_replay_history_colored(self):
+        state = _make_state()
+        state.messages = [{"role": "user", "content": "hi"}]
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            chat._replay_history(state, use_color=True)
+        self.assertIn("\x01\033[", buf.getvalue())
+
     def test_new_session_id_unique(self):
         ids = {chat.new_session_id() for _ in range(100)}
         self.assertEqual(len(ids), 100)
