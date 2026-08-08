@@ -2,8 +2,8 @@ import os
 import sys
 
 C_PROMPT = "\x01\033[95m\x02"
-C_THINK = "\x01\033[96m\x02"
-C_OUTPUT = "\x01\033[93m\x02"
+C_THINK = "\x01\033[2;37m\x02"
+C_OUTPUT = "\x01\033[97m\x02"
 C_METER_LOW = "\x01\033[92m\x02"
 C_METER_MID = "\x01\033[93m\x02"
 C_METER_HIGH = "\x01\033[91m\x02"
