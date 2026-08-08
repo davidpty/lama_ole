@@ -1,8 +1,12 @@
 import importlib.util
 import json
+import hashlib
+import math
 import os
+import re
 import sys
 import time
+import uuid
 from dataclasses import dataclass, field
 
 try:
@@ -23,7 +27,7 @@ from tool_base import (
     peek_tools_of_module,
 )
 
-from color_util import C_PROMPT, color_mode_enabled, colored
+import color_util
 
 
 @dataclass
@@ -56,6 +60,13 @@ class ChatState:
     ndjson_log_file_handle: object = None
     color: object = "auto"
     state_manager: StateManager = field(default_factory=StateManager)
+    sessions_dir: str = None
+    session_id: str = None
+    session_created_at: float = None
+    session_autosave: bool = True
+    ctx_meter: bool = True
+    ctx_max: int = None
+    ctx_usage: dict = None
 
     def __post_init__(self):
         if self.ndjson_log_path and self.ndjson_log_file_handle is None:
@@ -119,6 +130,8 @@ _COMMANDS = [
     "/model",
     "/save",
     "/load",
+    "/resume",
+    "/sessions",
     "/tools",
     "/skill",
     "/systemprompt",
@@ -224,13 +237,236 @@ def _install_readline_completion() -> None:
         readline.parse_and_bind("tab: complete")
 
 
+# ---------------------------------------------------------------------------
+# Context-window usage meter
+# ---------------------------------------------------------------------------
+
+_CTX_WARN_PCT = 70
+_CTX_DANGER_PCT = 90
+_BAR_WIDTH = 10
+
+_METER_COLOR_GLOBALS = {
+    "low": "C_METER_LOW",
+    "mid": "C_METER_MID",
+    "high": "C_METER_HIGH",
+}
+
+
+def _ensure_ctx_max(state: ChatState) -> None:
+    """Resolve the effective context window for ``state.model`` once.
+
+    Order: explicit --num_ctx option -> LAMA_OLE_CTX_SIZE override -> the
+    running model's allocated context (client.ps) -> the model's num_ctx
+    parameter -> the model's declared capacity (client.show). Returns None
+    when nothing is known, in which case the meter shows token counts without
+    a percentage.
+    """
+    if state.ctx_max is not None:
+        return
+    state.ctx_max = _resolve_ctx_max(state)
+
+
+def _resolve_ctx_max(state: ChatState):
+    num_ctx = (state.options or {}).get("num_ctx")
+    if num_ctx:
+        return int(num_ctx)
+
+    override = os.environ.get("LAMA_OLE_CTX_SIZE")
+    if override:
+        try:
+            return int(override)
+        except ValueError:
+            pass
+
+    try:
+        resp = state.client.ps()
+        for m in getattr(resp, "models", []) or []:
+            name = getattr(m, "model", None) or getattr(m, "name", None)
+            cl = getattr(m, "context_length", None)
+            if name == state.model and cl:
+                return int(cl)
+    except Exception:
+        pass
+
+    try:
+        r = state.client.show(model=state.model)
+        params = getattr(r, "parameters", None)
+        if isinstance(params, str):
+            m = re.search(r"\bnum_ctx\s+(\d+)", params)
+            if m:
+                return int(m.group(1))
+        elif isinstance(params, dict):
+            nc = params.get("num_ctx")
+            if nc:
+                return int(nc)
+        for key, val in (getattr(r, "modelinfo", None) or {}).items():
+            if key.endswith(".context_length") and val:
+                return int(val)
+    except Exception:
+        pass
+
+    return None
+
+
+def _meter_state(percent: int):
+    """Color state for a usage percentage: 'low', 'mid', 'high' or None."""
+    if percent is None:
+        return None
+    if percent >= _CTX_DANGER_PCT:
+        return "high"
+    if percent >= _CTX_WARN_PCT:
+        return "mid"
+    return "low"
+
+
+def _meter_colored(text: str, percent, use_color: bool) -> str:
+    if not use_color:
+        return text
+    state = _meter_state(percent) or "low"
+    code = getattr(color_util, _METER_COLOR_GLOBALS[state])
+    return color_util.colored(text, code, True)
+
+
+def _ctx_usage_total(usage: dict):
+    """Total context tokens (input + output of the last round), opencode-style.
+
+    The last request's prompt_eval_count is the exact context consumed so far;
+    adding eval_count projects the context that will be used once this turn's
+    response is appended.
+    """
+    if not usage:
+        return None
+    used = usage.get("prompt_eval_count")
+    if not used:
+        return None
+    return used + (usage.get("eval_count") or 0)
+
+
+def _ctx_prompt_gauge(state: ChatState, use_color: bool) -> str:
+    """Compact gauge for the input prompt, e.g. '[ctx 12,345/32,768 ████░░░░░░ 37%] '."""
+    total = _ctx_usage_total(state.ctx_usage)
+    percent = None
+    if total is None:
+        label = "[ctx --]"
+    else:
+        _ensure_ctx_max(state)
+        if state.ctx_max:
+            percent = round(total / state.ctx_max * 100)
+            filled = min(percent // 10, _BAR_WIDTH)
+            bar = "█" * filled + "░" * (_BAR_WIDTH - filled)
+            label = f"[ctx {total:,}/{state.ctx_max:,} {bar} {percent}%]"
+        else:
+            label = f"[ctx {total:,} tokens]"
+    return _meter_colored(label, percent, use_color) + " "
+
+
+def _estimate_context_tokens(state: ChatState) -> int:
+    """Estimate the current context tokens from message characters (chars/4).
+
+    Falls back on this when no authoritative token count exists yet (first
+    turn): it includes the just-appended user message and the composed system
+    prompt if one is not present in ``state.messages``.
+    """
+    from tool_base import compose_system_prompt
+
+    total_chars = 0
+    has_system = False
+    for m in state.messages:
+        total_chars += len(m.get("content", "") or "")
+        if m.get("role") == "system":
+            has_system = True
+    if not has_system:
+        sp = compose_system_prompt(
+            system_prompt=state.system_prompt,
+            skill_text=state.skill_text,
+            no_safety_system_prompt=state.no_safety_system_prompt,
+        )
+        total_chars += len(sp)
+    return max(1, total_chars // 4)
+
+
+def _warn_ctx_overflow(state: ChatState, text: str) -> None:
+    """Warn on stderr when the typed message is predicted to fill the window.
+
+    Uses the last round's exact input token count when available; otherwise
+    estimates the current context (first turn) via chars/4. The new message's
+    tokens are estimated as chars/4 (matching the context breakdown heuristic).
+    """
+    if not state.ctx_meter:
+        return
+    used = (state.ctx_usage or {}).get("prompt_eval_count")
+    _ensure_ctx_max(state)
+    if not state.ctx_max:
+        return
+    if used:
+        predicted = used + max(1, len(text) // 4)
+    else:
+        predicted = _estimate_context_tokens(state)
+    if predicted > state.ctx_max:
+        pct = round(predicted / state.ctx_max * 100)
+        print(
+            f"[WARNING] Estimated context after this message: {predicted:,} / "
+            f"{state.ctx_max:,} tokens ({pct}%) — exceeds the context window.",
+            file=sys.stderr,
+        )
+    elif predicted / state.ctx_max >= _CTX_DANGER_PCT / 100:
+        pct = round(predicted / state.ctx_max * 100)
+        print(
+            f"[WARNING] Estimated context after this message: {predicted:,} / "
+            f"{state.ctx_max:,} tokens ({pct}%).",
+            file=sys.stderr,
+        )
+
+
+def _estimate_context_breakdown(messages: list, input_tokens: int) -> list:
+    """Estimate per-category context usage (system/user/assistant/tool).
+
+    Categories are estimated via chars/4 and then scaled so their total
+    matches the authoritative input token count from the last request
+    (the same approach opencode uses for its context breakdown).
+    Returns a list of (key, tokens, percent) tuples for non-empty categories.
+    """
+    counts = {"system": 0, "user": 0, "assistant": 0, "tool": 0}
+    for m in messages:
+        role = m.get("role")
+        content = m.get("content") or ""
+        if role in counts:
+            counts[role] += len(content)
+
+    est = {k: math.ceil(v / 4) for k, v in counts.items()}
+    estimated = sum(est.values())
+    if not estimated or not input_tokens:
+        return []
+
+    if estimated <= input_tokens:
+        est["other"] = input_tokens - estimated
+    else:
+        scale = input_tokens / estimated
+        est = {k: math.floor(v * scale) for k, v in est.items()}
+        est["other"] = max(0, input_tokens - sum(est.values()))
+
+    result = []
+    for key, tokens in est.items():
+        if tokens <= 0:
+            continue
+        percent = round(tokens / input_tokens * 100, 1)
+        result.append((key, tokens, percent))
+    return result
+
+
 def run_chat(state: ChatState):
     print("Chat mode. Type /help for commands.")
     _install_readline_completion()
-    use_color = color_mode_enabled(state.color)
-    prompt = colored(">>> ", C_PROMPT, use_color)
+    use_color = color_util.color_mode_enabled(state.color)
+    if state.ctx_meter:
+        _ensure_ctx_max(state)
+    base_prompt = color_util.colored(">>> ", color_util.C_PROMPT, use_color)
 
     while True:
+        if state.ctx_meter:
+            prompt = _ctx_prompt_gauge(state, use_color) + base_prompt
+        else:
+            prompt = base_prompt
         # Snapshot before reading input so an interrupt either at the prompt or
         # during the turn only rolls back what this iteration added.
         messages_before = len(state.messages)
@@ -243,18 +479,21 @@ def run_chat(state: ChatState):
 
             if stripped.startswith("/"):
                 if _handle_command(stripped, state):
+                    autosave_session(state)
                     break
                 continue
 
             user_msg = {"role": "user", "content": stripped}
             state.messages.append(user_msg)
             state.log_ndjson(user_msg)
+            _warn_ctx_overflow(state, stripped)
 
             if state.chatinput_file_handle:
                 from tool_base import _write_input
                 _write_input(state.chatinput_file_handle, f"[chat input] {stripped}\n")
                 state.chatinput_file_handle.flush()
 
+            metrics = {}
             run_with_tools(
                 client=state.client,
                 model=state.model,
@@ -279,9 +518,13 @@ def run_chat(state: ChatState):
                 color=state.color,
                 ndjson_log_file_handle=state.ndjson_log_file_handle,
                 state_manager=state.state_manager,
+                metrics=metrics,
             )
+            state.ctx_usage = metrics
+            autosave_session(state)
         except EOFError:
             print()
+            autosave_session(state)
             break
         except KeyboardInterrupt as e:
             # A second Ctrl-C while we clean up must not kill the REPL.
@@ -320,8 +563,13 @@ def _handle_command(line: str, state: ChatState) -> bool:
         _show_help()
 
     elif cmd == "/clear":
+        if _has_conversation(state):
+            autosave_session(state)
         state.messages.clear()
-        print("Conversation cleared.")
+        state.ctx_usage = None
+        state.session_id = new_session_id()
+        state.session_created_at = time.time()
+        print("Conversation cleared. Previous session preserved; use /resume to restore it.")
 
     elif cmd == "/feed":
         _cmd_feed(arg, state)
@@ -339,6 +587,12 @@ def _handle_command(line: str, state: ChatState) -> bool:
     elif cmd == "/load":
         _cmd_load(arg, state)
 
+    elif cmd == "/resume":
+        _cmd_resume(arg, state)
+
+    elif cmd == "/sessions":
+        _cmd_sessions(arg, state)
+
     elif cmd == "/tools":
         _cmd_tools(arg, state)
 
@@ -349,8 +603,7 @@ def _handle_command(line: str, state: ChatState) -> bool:
         _cmd_systemprompt(arg, state)
 
     elif cmd == "/context":
-        total_chars = sum(len(m.get("content", "") or "") for m in state.messages)
-        print(f"Messages: {len(state.messages)}, total characters: {total_chars}")
+        _cmd_context(arg, state)
 
     else:
         print(f"Unknown command: {cmd}. Type /help for available commands.")
@@ -362,10 +615,12 @@ def _show_help():
     print()
     print("Commands:")
     print("  /feed <path>    Read a file and inject its content as a message")
-    print("  /clear          Clear the conversation history")
+    print("  /clear          Clear the conversation history (previous session is preserved)")
     print("  /model <name>   Switch to a different model")
     print("  /save <path>    Save the conversation to a JSON file")
     print("  /load <path>    Load a conversation from a JSON file")
+    print("  /resume [id|title]  Resume a saved session (with no arg: picker; with a match: direct)")
+    print("  /sessions       List all saved sessions")
     print("  /tools loaded                    List loaded toolsets and their tools")
     print("  /tools available                 List toolsets available to load")
     print("  /tools show <toolset>            List all tools of one toolset")
@@ -379,10 +634,38 @@ def _show_help():
     print("  /systemprompt [show]  Show the current system prompt")
     print("  /systemprompt <file>  Load a system prompt from a file")
     print("  /systemprompt unset   Unset the system prompt")
-    print("  /context        Show conversation stats")
+    print("  /context [on|off]  Show context usage stats, or toggle the context meter")
     print("  /help           Show this help message")
     print("  /exit, /quit    Exit the chat")
     print()
+
+
+def _cmd_context(arg: str, state: ChatState):
+    arg = arg.strip().lower()
+    if arg in ("on", "off"):
+        state.ctx_meter = arg == "on"
+        print(f"Context meter {'enabled' if state.ctx_meter else 'disabled'}.")
+        return
+    if arg:
+        print("Usage: /context [on|off]")
+        return
+    _ensure_ctx_max(state)
+    total_chars = sum(len(m.get("content", "") or "") for m in state.messages)
+    print(f"Messages: {len(state.messages)}, total characters: {total_chars}")
+    used = (state.ctx_usage or {}).get("prompt_eval_count")
+    if not used:
+        print("Context usage: no model response yet this session.")
+        return
+    eval_count = state.ctx_usage.get("eval_count") or 0
+    total = used + eval_count
+    if state.ctx_max:
+        pct = round(total / state.ctx_max * 100)
+        print(f"Context usage: {total:,} / {state.ctx_max:,} tokens ({pct}%)")
+    else:
+        print(f"Context usage: {total:,} tokens (window size unknown)")
+    breakdown = _estimate_context_breakdown(state.messages, used)
+    for key, tokens, percent in breakdown:
+        print(f"  {key}: {tokens:,} tokens ({percent}%)")
 
 
 def _cmd_feed(path: str, state: ChatState):
@@ -415,6 +698,7 @@ def _cmd_feed(path: str, state: ChatState):
     state.log_ndjson(user_msg)
     print(f"Loaded {len(content)} characters from {path}")
     try:
+        metrics = {}
         run_with_tools(
             client=state.client,
             model=state.model,
@@ -439,7 +723,10 @@ def _cmd_feed(path: str, state: ChatState):
             color=state.color,
             ndjson_log_file_handle=state.ndjson_log_file_handle,
             state_manager=state.state_manager,
+            metrics=metrics,
         )
+        state.ctx_usage = metrics
+        autosave_session(state)
     except KeyboardInterrupt:
         while len(state.messages) > messages_before:
             state.messages.pop()
@@ -450,14 +737,32 @@ def _cmd_feed(path: str, state: ChatState):
             state.messages.pop()
 
 
-def _cmd_save(path: str, state: ChatState):
-    if not path:
-        print("Usage: /save <path>")
-        return
+def serialize_session(
+    state: ChatState,
+    session_id: str = None,
+    cwd: str = None,
+    created_at: float = None,
+) -> dict:
+    """Serialize the resumable conversation state into a JSON-able dict.
+
+    Shared by ``/save`` (explicit snapshot) and session auto-save. Only
+    optional fields that are actually set are included so old files keep
+    loading and the output stays small.
+    """
     data = {
         "model": state.model,
         "messages": state.messages,
+        "updated_at": time.time(),
     }
+    title = _session_title(state)
+    if title:
+        data["title"] = title
+    if session_id:
+        data["session_id"] = session_id
+    if cwd:
+        data["cwd"] = cwd
+    if created_at:
+        data["created_at"] = created_at
     if state.skill is not None or state.skill_text is not None:
         data["skill"] = state.skill
         data["skill_text"] = state.skill_text
@@ -465,6 +770,47 @@ def _cmd_save(path: str, state: ChatState):
         data["system_prompt"] = state.system_prompt
     if state.loaded_tool_modules:
         data["loaded_tool_modules"] = list(state.loaded_tool_modules)
+    return data
+
+
+def apply_session(state: ChatState, data: dict, source: str = "session") -> None:
+    """Restore conversation state from a serialized session dict.
+
+    Shared by ``/load`` and session resume. Unknown or absent keys are
+    ignored so old-format files and forward compatibility both work.
+    """
+    state.messages = data.get("messages", [])
+    state.ctx_usage = None
+    if data.get("session_id"):
+        state.session_id = data["session_id"]
+    if data.get("created_at"):
+        state.session_created_at = data["created_at"]
+    if "model" in data:
+        state.model = data["model"]
+    if "loaded_tool_modules" in data:
+        module_names = data["loaded_tool_modules"]
+        state.loaded_tools = []
+        state.loaded_tool_modules = []
+        for module_name in module_names:
+            try:
+                tools = load_tools(module_name)
+                state.loaded_tools.extend(tools)
+                state.loaded_tool_modules.append(module_name)
+            except Exception as e:
+                print(f"Warning: could not reload toolset '{module_name}': {e}")
+        state.refresh_ollama_tools()
+    if "skill" in data or "skill_text" in data:
+        state.skill = data.get("skill")
+        state.skill_text = data.get("skill_text")
+    if "system_prompt" in data:
+        state.system_prompt = data["system_prompt"]
+
+
+def _cmd_save(path: str, state: ChatState):
+    if not path:
+        print("Usage: /save <path>")
+        return
+    data = serialize_session(state)
     if os.path.exists(path):
         confirm = input(f"File '{path}' already exists. Overwrite? (y/n): ").lower()
         if confirm != 'y':
@@ -492,27 +838,258 @@ def _cmd_load(path: str, state: ChatState):
     except Exception as e:
         print(f"Error loading conversation: {e}")
         return
-    state.messages = data.get("messages", [])
-    if "model" in data:
-        state.model = data["model"]
-    if "loaded_tool_modules" in data:
-        module_names = data["loaded_tool_modules"]
-        state.loaded_tools = []
-        state.loaded_tool_modules = []
-        for module_name in module_names:
-            try:
-                tools = load_tools(module_name)
-                state.loaded_tools.extend(tools)
-                state.loaded_tool_modules.append(module_name)
-            except Exception as e:
-                print(f"Warning: could not reload toolset '{module_name}': {e}")
-        state.refresh_ollama_tools()
-    if "skill" in data or "skill_text" in data:
-        state.skill = data.get("skill")
-        state.skill_text = data.get("skill_text")
-    if "system_prompt" in data:
-        state.system_prompt = data["system_prompt"]
+    apply_session(state, data, source=path)
     print(f"Loaded conversation with {len(state.messages)} messages")
+
+
+# ---------------------------------------------------------------------------
+# Session auto-save / resume
+# ---------------------------------------------------------------------------
+
+
+def _session_title(state: ChatState, limit: int = 60) -> str:
+    """Derive a short human title from the first user message."""
+    for m in state.messages:
+        if m.get("role") == "user":
+            text = (m.get("content") or "").strip().replace("\n", " ")
+            if text:
+                return text[:limit]
+    return ""
+
+
+def _has_conversation(state: ChatState) -> bool:
+    return any(m.get("role") != "system" for m in state.messages)
+
+
+def _encode_cwd(path: str) -> str:
+    """Encode an absolute path into a filesystem-safe, collision-free slug.
+
+    Every run of non-alphanumeric characters becomes a '-', so
+    /home/nx/proj -> home-nx-proj, then a short SHA-1 digest of the real
+    path is appended. The digest guarantees distinct project paths (e.g.
+    lama_ole vs lama-ole, or unicode names) never share a directory. The
+    real path is always stored inside the session file as ground truth.
+    """
+    abs_path = os.path.abspath(path)
+    slug = re.sub(r"[^A-Za-z0-9]+", "-", abs_path).strip("-")
+    digest = hashlib.sha1(abs_path.encode("utf-8")).hexdigest()[:10]
+    return f"{slug}-{digest}"
+
+
+def session_dir_for(cwd: str, sessions_dir: str) -> str:
+    return os.path.join(sessions_dir, _encode_cwd(cwd))
+
+
+def new_session_id() -> str:
+    return uuid.uuid4().hex
+
+
+def _write_session_file(path: str, data: dict) -> None:
+    """Atomically write a session file with 0600 permissions."""
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=2, ensure_ascii=False)
+    os.chmod(tmp, 0o600)
+    os.replace(tmp, path)
+
+
+def autosave_session(state: ChatState) -> None:
+    """Persist the current session to disk (best-effort).
+
+    No-op unless sessions are configured, a session id exists, auto-save is
+    enabled, and the conversation has at least one non-system message.
+    """
+    if not state.sessions_dir or not state.session_id:
+        return
+    if not state.session_autosave:
+        return
+    if not _has_conversation(state):
+        return
+    dirpath = session_dir_for(os.getcwd(), state.sessions_dir)
+    try:
+        os.makedirs(dirpath, exist_ok=True)
+    except OSError as e:
+        print(f"Error creating sessions directory: {e}", file=sys.stderr)
+        return
+    data = serialize_session(
+        state,
+        session_id=state.session_id,
+        cwd=os.getcwd(),
+        created_at=state.session_created_at or time.time(),
+    )
+    path = os.path.join(dirpath, state.session_id + ".json")
+    try:
+        _write_session_file(path, data)
+    except OSError as e:
+        print(f"Error saving session: {e}", file=sys.stderr)
+
+
+def find_recent_session(sessions_dir: str, cwd: str):
+    """Return (path, data) for the newest session recorded in ``cwd``.
+
+    Returns None when the directory has no session files. The recorded cwd
+    (ground truth inside the file) must match the given directory, so a
+    renamed project simply does not match and starts fresh.
+    """
+    base = session_dir_for(cwd, sessions_dir)
+    if not os.path.isdir(base):
+        return None
+    norm = os.path.normpath(cwd)
+    best = None
+    for name in os.listdir(base):
+        if not name.endswith(".json"):
+            continue
+        path = os.path.join(base, name)
+        try:
+            with open(path, encoding="utf-8") as f:
+                data = json.load(f)
+        except (OSError, ValueError):
+            continue
+        if os.path.normpath(data.get("cwd") or "") != norm:
+            continue
+        updated = data.get("updated_at") or data.get("created_at") or 0
+        if best is None or updated > (best[1].get("updated_at") or best[1].get("created_at") or 0):
+            best = (path, data)
+    return best
+
+
+def _list_session_files(sessions_dir: str) -> list:
+    """Return [(path, data)] for every session file across all projects."""
+    results = []
+    if not os.path.isdir(sessions_dir):
+        return results
+    for entry in sorted(os.listdir(sessions_dir)):
+        full = os.path.join(sessions_dir, entry)
+        if not os.path.isdir(full):
+            continue
+        for name in sorted(os.listdir(full)):
+            if not name.endswith(".json"):
+                continue
+            path = os.path.join(full, name)
+            try:
+                with open(path, encoding="utf-8") as f:
+                    data = json.load(f)
+            except (OSError, ValueError):
+                continue
+            results.append((path, data))
+    return results
+
+
+def _collect_sessions(state: ChatState):
+    """Return (current_dir_sessions, other_sessions), each recency-sorted.
+
+    Sessions whose recorded cwd matches the current directory are "current";
+    everything else is listed separately so renamed/moved projects remain
+    recoverable via the /resume picker.
+    """
+    sessions = _list_session_files(state.sessions_dir)
+    current = os.path.normpath(os.getcwd())
+    cur = [pd for pd in sessions if os.path.normpath(pd[1].get("cwd") or "") == current]
+    other = [pd for pd in sessions if os.path.normpath(pd[1].get("cwd") or "") != current]
+    key = lambda pd: pd[1].get("updated_at") or pd[1].get("created_at") or 0
+    cur.sort(key=key, reverse=True)
+    other.sort(key=key, reverse=True)
+    return cur, other
+
+
+def _print_session(index: int, data: dict, current: bool = True) -> None:
+    sid = (data.get("session_id") or "?")[:8]
+    title = data.get("title") or "(untitled)"
+    model = data.get("model") or "?"
+    updated = data.get("updated_at") or data.get("created_at") or 0
+    ts = time.strftime("%Y-%m-%d %H:%M", time.localtime(updated))
+    n = sum(1 for m in data.get("messages", []) if m.get("role") != "system")
+    marker = "" if current else " [moved]"
+    print(f"  {index}. [{ts}] {title}  ({model}, {n} msgs, {sid}){marker}")
+
+
+def _resume_into_state(state: ChatState, path: str, data: dict) -> None:
+    """Load a session into the REPL, re-associating it if it moved."""
+    old_cwd = data.get("cwd")
+    apply_session(state, data, source=path)
+    if not state.session_id:
+        state.session_id = new_session_id()
+        state.session_created_at = time.time()
+    if old_cwd and os.path.normpath(old_cwd) != os.path.normpath(os.getcwd()):
+        data["cwd"] = os.getcwd()
+        new_path = os.path.join(
+            session_dir_for(os.getcwd(), state.sessions_dir),
+            state.session_id + ".json",
+        )
+        try:
+            os.makedirs(os.path.dirname(new_path), exist_ok=True)
+            _write_session_file(new_path, data)
+            if os.path.abspath(path) != os.path.abspath(new_path):
+                os.remove(path)
+        except OSError as e:
+            print(f"Error re-associating session: {e}", file=sys.stderr)
+        print(f"Re-associated session from {old_cwd} to {os.getcwd()}.")
+    title = data.get("title") or "(untitled)"
+    print(f"Resumed session: {title} ({len(state.messages)} messages)")
+
+
+def _cmd_resume(arg: str, state: ChatState):
+    if not state.sessions_dir:
+        print("Sessions directory is not configured.")
+        return
+
+    if arg:
+        needle = arg.strip().lower()
+        sessions = _list_session_files(state.sessions_dir)
+        cands = [
+            pd for pd in sessions
+            if needle in (pd[1].get("session_id") or "").lower()
+            or needle in (pd[1].get("title") or "").lower()
+        ]
+        if not cands:
+            print(f"No session matching '{arg}'.")
+            return
+        cands.sort(key=lambda pd: pd[1].get("updated_at") or 0, reverse=True)
+        _resume_into_state(state, cands[0][0], cands[0][1])
+        return
+
+    cur, other = _collect_sessions(state)
+    all_items = cur + other
+    if not all_items:
+        print("No saved sessions to resume.")
+        return
+    index = 0
+    for path, data in cur:
+        index += 1
+        _print_session(index, data, current=True)
+    for path, data in other:
+        index += 1
+        _print_session(index, data, current=False)
+    choice = input(f"Select session (1-{index}) or Enter to cancel: ").strip()
+    if not choice:
+        print("Cancelled.")
+        return
+    if not choice.isdigit():
+        print("Invalid selection.")
+        return
+    n = int(choice)
+    if not (1 <= n <= index):
+        print("Invalid selection.")
+        return
+    _resume_into_state(state, all_items[n - 1][0], all_items[n - 1][1])
+
+
+def _cmd_sessions(arg: str, state: ChatState):
+    if not state.sessions_dir:
+        print("Sessions directory is not configured.")
+        return
+    cur, other = _collect_sessions(state)
+    if not cur and not other:
+        print("No saved sessions.")
+        return
+    index = 0
+    for path, data in cur:
+        index += 1
+        _print_session(index, data, current=True)
+    for path, data in other:
+        index += 1
+        _print_session(index, data, current=False)
+    print(f"\n{index} session(s) stored in {state.sessions_dir}")
 
 
 def _default_skills_dir(state: ChatState) -> str:

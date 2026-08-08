@@ -6,7 +6,7 @@ from typing import Any, Optional, List
 
 from ollama import Tool as OllamaTool
 
-from color_util import C_OUTPUT, C_THINK, color_mode_enabled, colored
+import color_util
 
 from .models import Tool
 from .constants import DANGEROUS_TOOLS
@@ -99,16 +99,19 @@ def run_with_tools(
     ndjson_log_file_handle=None,
     color: str = "auto",
     state_manager=None,
+    metrics: Optional[dict] = None,
 ):
     from .loop_states import ExecutionState, StateManager, ExecutionInterrupted
     from .logging import StateLogger
 
     if state_manager is None:
         state_manager = StateManager()
-    use_color = color_mode_enabled(color)
+    use_color = color_util.color_mode_enabled(color)
     tool_rounds = 0
     think_state = False
     final_response = ""
+    last_prompt_eval_count = None
+    last_eval_count = None
 
     thought_logger = (
         StateLogger(handle=thought_file_handle) if thought_file_handle else None
@@ -247,6 +250,11 @@ def run_with_tools(
                 for chunk in stream:
                     msg = chunk.message
 
+                    if getattr(chunk, "prompt_eval_count", None) is not None:
+                        last_prompt_eval_count = chunk.prompt_eval_count
+                    if getattr(chunk, "eval_count", None) is not None:
+                        last_eval_count = chunk.eval_count
+
                     if verbose >= 3:
                         from .logging import _log_chunk
                         _log_chunk(msg, file=sys.stderr)
@@ -259,9 +267,9 @@ def run_with_tools(
                                 thought_logger.new_slice()
                             if show_thinking:
                                 ts = time.strftime("%Y-%m-%d %H:%M:%S")
-                                print(colored(f"[{ts}] Thinking starts", C_THINK, use_color))
+                                print(color_util.colored(f"[{ts}] Thinking starts", color_util.C_THINK, use_color))
                         if show_thinking:
-                            print(colored(msg.thinking, C_THINK, use_color), end='', flush=True)
+                            print(color_util.colored(msg.thinking, color_util.C_THINK, use_color), end='', flush=True)
                         if thought_logger:
                             thought_logger.write_thought(msg.thinking)
 
@@ -274,12 +282,12 @@ def run_with_tools(
                             if show_thinking:
                                 ts = time.strftime("%Y-%m-%d %H:%M:%S")
                                 print()
-                                print(colored(f"[{ts}] Thinking ends", C_THINK, use_color))
+                                print(color_util.colored(f"[{ts}] Thinking ends", color_util.C_THINK, use_color))
                                 print()
                         elif state_manager.current_state != ExecutionState.OUTPUTTING:
                             state_manager.transition_to(ExecutionState.OUTPUTTING)
                         response_content += msg.content
-                        print(colored(msg.content, C_OUTPUT, use_color), end='', flush=True)
+                        print(color_util.colored(msg.content, color_util.C_OUTPUT, use_color), end='', flush=True)
                         if output_logger:
                             output_logger.write_output(msg.content)
 
@@ -301,10 +309,14 @@ def run_with_tools(
             if show_thinking:
                 ts = time.strftime("%Y-%m-%d %H:%M:%S")
                 print()
-                print(colored(f"[{ts}] Thinking ends", C_THINK, use_color))
+                print(color_util.colored(f"[{ts}] Thinking ends", color_util.C_THINK, use_color))
                 print()
 
         print()
+
+        if metrics is not None:
+            metrics["prompt_eval_count"] = last_prompt_eval_count
+            metrics["eval_count"] = last_eval_count
 
         if response_tool_calls:
             assistant_msg = {

@@ -270,10 +270,12 @@ In chat mode (`--chat`), lines starting with `/` are commands:
 | Command | Description |
 |---------|-------------|
 | `/feed <path>` | Read a file and send its content as a message |
-| `/clear` | Clear the conversation history |
+| `/clear` | Clear the conversation history (the previous session is preserved and can be restored with `/resume`) |
 | `/model <name>` | Switch to a different model |
 | `/save <path>` | Save the conversation to a JSON file (model, messages, active skill, system prompt and loaded toolsets) |
 | `/load <path>` | Load a conversation from a JSON file (restores the active skill, system prompt and re-loads toolsets) |
+| `/resume [match]` | Resume a saved session; without an argument it lists sessions and prompts, with a session-id or title substring it loads directly |
+| `/sessions` | List all saved sessions |
 | `/tools loaded` | List loaded toolsets and their tools |
 | `/tools available` | List toolsets available to load |
 | `/tools show <toolset>` | List all tools of one toolset |
@@ -287,17 +289,65 @@ In chat mode (`--chat`), lines starting with `/` are commands:
 | `/systemprompt [show]` | Show the current system prompt |
 | `/systemprompt <file>` | Load a system prompt from a file |
 | `/systemprompt unset` | Unset the system prompt (back to default) |
-| `/context` | Show message count and total character count |
+| `/context` | Show context usage (tokens/window/percentage + breakdown), or `/context on` / `/context off` to toggle the meter |
 | `/help` | Show this help message |
 | `/exit`, `/quit` | Exit the chat |
 
 Bare `/tools` prints the tool subcommand usage. Bare `/skill` prints the skill
 subcommand usage. Bare `/systemprompt` prints the current system prompt.
 
+### Context-window meter
+
+In chat mode a context-window usage meter is shown by default:
+
+* The prompt shows a live gauge, e.g. `[ctx 12,345/32,768 ████░░░░░░ 37%] `,
+  which is green below 70% usage, yellow from 70%, and red from 90%. It
+  updates after every turn.
+* `/context` prints the exact usage plus a per-category breakdown
+  (system/user/assistant/tool), estimated and scaled to match the real token
+  count; `/context off` and `/context on` toggle the meter.
+* Before each turn a warning is printed when the typed message is predicted
+  to overflow the window.
+
+The window size is resolved in order: `--num_ctx`, `LAMA_OLE_CTX_SIZE`, the
+running model's allocated context (`ollama ps`), the model's `num_ctx`
+parameter, the model's declared context length, otherwise unknown (token
+counts are shown without a percentage).
+
 Tab completion is enabled in interactive mode: commands, `/tools`, `/skill` and
 `/systemprompt` subcommands, and file paths (for `/feed`, `/save`, `/load`,
 `/skill load` and `/systemprompt`) are completed with Tab. Completion needs the
 `readline` module and is skipped automatically when stdin is not a terminal.
+
+## Sessions
+
+Chat sessions are saved automatically. Each chat run is recorded after every
+turn and on exit, so you can leave and resume later without manual `/save`
+and `/load`.
+
+* **Storage**: `~/.local/share/lama_ole/sessions/` (respects `XDG_DATA_HOME`,
+  or override with `LAMA_OLE_SESSION_DIR`). One directory per project (the
+  working directory encoded into a slug plus a short hash of the real path:
+  `/home/me/proj` → `home-me-proj-<hash>`; the hash guarantees similar names
+  like `lama_ole` vs `lama-ole` never collide), each session its own
+  `<session-id>.json` file with 0600 permissions. The real directory path is
+  stored inside the file.
+* **Auto-resume**: starting `--chat` restores the most recent session for the
+  current directory and prints a notice. If the session model differs from
+  the CLI `-m`, you are asked which to keep (session / CLI / abort).
+* **Opt out**: the two behaviors are independent toggles, both on by default:
+  * `--no-resume` (or `LAMA_OLE_RESUME=false`) disables auto-loading.
+  * `--no-autosave` (or `LAMA_OLE_AUTOSAVE=false`) disables writing session
+    files.
+  `/resume` and `/sessions` still work for manual recovery either way.
+* **Renames/moves**: if a project directory is renamed, its sessions no
+  longer match the new path automatically. Run `/resume` — sessions recorded
+  elsewhere are listed (marked `[moved]`) and resuming one re-associates it
+  to the current directory.
+* **`/clear`**: archives the current session (leaving it restorable) and
+  starts a fresh one.
+* **`/save <path>` / `/load <path>`**: explicit portable snapshots for
+  sharing or backup; they remain independent of the automatic sessions.
 
 ## Configuration Options
 
@@ -321,6 +371,8 @@ Tab completion is enabled in interactive mode: commands, `/tools`, `/skill` and
 | `--num_gpu INT` | GPU layers to use | (Ollama default) |
 | `--keep_alive DURATION` | Keep model in memory (`5m`, `1h`) | (Ollama default) |
 | `--chat` | Start interactive chat REPL | |
+| `--resume` / `--no-resume` | Auto-resume the most recent session for the current directory on startup | `--resume` |
+| `--autosave` / `--no-autosave` | Auto-save the chat session after every turn and on exit | `--autosave` |
 | `--tool MODULE` | Load tool module (repeatable) | |
 | `--skill PATH` | Load skill text into system role (repeatable; files concatenated) | |
 | `--vision_model MODEL` | Vision model for media tools (repeatable) | (auto-detect) |
@@ -341,6 +393,7 @@ Tab completion is enabled in interactive mode: commands, `/tools`, `/skill` and
 | `--no_safety_system_prompt` | Disable safety system prompt; enables potential takeover when tools are used (placed after any user-provided system prompt) | |
 | `--debug` | Initialize the environment and enter an interactive Python REPL for debugging | |
 | `--color MODE` | Colorize user input, thinking, and LLM output: `auto` (TTY only), `always`, `never`/`none` | `auto` |
+| `--ctx-meter` / `--no-ctx-meter` | Show the context-window usage meter in chat mode | on |
 | `-v` to `-vvv` | Verbosity level (repeat for more) | silent |
 
 ### Verbosity Levels
@@ -467,12 +520,31 @@ the configured default.
 | `LAMA_OLE_OLLAMA_WEBSRCH` | boolean | `--ollama_websearch` / `--no-ollama_websearch` |
 | `LAMA_OLE_VERBOSE` | integer | `-v, --verbose` (CLI `-v` adds to it) |
 | `LAMA_OLE_COLOR` | string | `--color` (`auto`, `always`, `never` or `none`) |
+| `LAMA_OLE_CTX_METER` | boolean | `--ctx-meter` / `--no-ctx-meter` |
+| `LAMA_OLE_CTX_SIZE` | integer | (config-only, no flag) — force the meter's context window |
 | `LAMA_OLE_TOOL` | space/comma-separated list | `--tool` (CLI appends, deduped) |
 | `LAMA_OLE_VISION_MODEL` | space/comma-separated list | `--vision_model` (CLI replaces) |
 | `LAMA_OLE_MAX_TOOL_ROUNDS` | integer | `--max_tool_rounds` |
 | `LAMA_OLE_MAX_TOOL_ROUNDS_CONTINUATION` | string | `--max_tool_rounds_continuation` |
 | `LAMA_OLE_SYSTEM_PROMPT` | string | `--system_prompt` |
 | `LAMA_OLE_SYSTEM_PROMPT_FILE` | string | `--system_prompt_file` |
+| `LAMA_OLE_COLOR_PROMPT` | color spec | (config-only, no flag) |
+| `LAMA_OLE_COLOR_THINKING` | color spec | (config-only, no flag) |
+| `LAMA_OLE_COLOR_OUTPUT` | color spec | (config-only, no flag) |
+| `LAMA_OLE_COLOR_METER_LOW` | color spec | (config-only, no flag) |
+| `LAMA_OLE_COLOR_METER_MID` | color spec | (config-only, no flag) |
+| `LAMA_OLE_COLOR_METER_HIGH` | color spec | (config-only, no flag) |
+
+The `LAMA_OLE_COLOR_*` variables customize the ANSI colors used for the chat
+prompt, the thinking stream, the LLM output, and the context meter (green below
+70% usage, yellow from 70%, red from 90%). Each accepts a comma-separated
+color spec: a named foreground color (`black`…`white`, `bright_*`, `grey`/`gray`),
+a 256-color number (`0`–`255`), a hex value (`#rrggbb`), plus attributes
+(`bold`, `italic`, `underline`, `dim`, `reverse`). Examples: `bold,green`,
+`#ff8700`, `bright_cyan`. Use `default` or `none` to restore the built-in color.
+These are theme preferences, so they are configured via the env/config files
+only (the CLI keeps just the `--color` on/off switch); an invalid value prints a
+warning and keeps the built-in default.
 
 Booleans accept `1/true/yes/on` and `0/false/no/off` (case-insensitive).
 `--tool` values are merged with the configured default (config first, deduplicated)
