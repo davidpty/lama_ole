@@ -387,6 +387,25 @@ def _install_readline_completion() -> None:
         readline.parse_and_bind("tab: complete")
 
 
+def _install_bracketed_paste() -> None:
+    """Keep multi-line paste content in the line buffer instead of submitting on newlines.
+
+    GNU readline 8.1+ supports bracketed paste: terminals that emit the
+    bracketed-paste sequences (most modern ones) let the whole pasted block be
+    inserted literally, with embedded newlines, so ``input()`` returns it as a
+    single user message rather than firing on the first newline. Non-bracketed
+    terminals and libedit degrade to the default behavior.
+    """
+    if readline is None:
+        return
+    if "libedit" in (readline.__doc__ or ""):
+        return
+    try:
+        readline.parse_and_bind("set enable-bracketed-paste on")
+    except Exception:
+        pass
+
+
 def _install_typeahead_replay(state: ChatState) -> None:
     """Replay mid-turn typed text into the next prompt's line buffer.
 
@@ -790,6 +809,7 @@ def maybe_auto_compact(state: ChatState) -> None:
 def run_chat(state: ChatState):
     print("Chat mode. Type /help for commands.")
     _install_readline_completion()
+    _install_bracketed_paste()
     _bind_mode_toggle(state)
     _install_typeahead_replay(state)
     use_color = color_util.color_mode_enabled(state.color)

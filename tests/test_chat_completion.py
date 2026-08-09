@@ -103,3 +103,8 @@ class TestFilePathCompletion:
     def test_no_matches_for_nonexistent(self, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
         assert chat._completion_candidates("/feed nofile") == []
+
+
+class TestBracketedPaste:
+    def test_install_runs_without_error(self):
+        chat._install_bracketed_paste()
