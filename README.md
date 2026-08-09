@@ -303,6 +303,7 @@ In chat mode (`--chat`), lines starting with `/` are commands:
 | `/load <path>` | Load a conversation from a JSON file (restores the active skill, system prompt and re-loads toolsets) |
 | `/resume [match]` | Resume a saved session; without an argument it lists sessions and prompts, with a session-id or title substring it loads directly |
 | `/sessions` | List all saved sessions |
+| `/stats` | Show the current model, the last turn's per-round breakdown (time, tokens, tok/s), and session averages per model |
 | `/rename <new title>` | Rename the current session (persists across autosaves) |
 | `/rename <id-prefix> <new title>` | Rename a stored session by session-id prefix |
 | `/tools loaded` | List loaded toolsets and their tools |
@@ -447,6 +448,10 @@ and `/load`.
   to the current directory.
 * **`/new`**: archives the current session (leaving it restorable) and
   starts a fresh one.
+* **`/stats`**: shows the current model, the last turn's per-round breakdown
+  (time, in/out tokens, tok/s), and session averages broken down per model.
+  Averages and the last-turn breakdown are saved with the session (autosave,
+  `/save`, `/load`, `/resume`) and restored on resume.
 * **Titles**: sessions are titled from the first user message by default.
   `/rename <new title>` overrides it for the current session (persisted across
   autosaves), and `/rename <id-prefix> <new title>` renames any stored session

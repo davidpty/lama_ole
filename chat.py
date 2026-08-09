@@ -89,6 +89,7 @@ class ChatState:
     ctx_compact: bool = False
     ctx_compact_threshold: float = DEFAULT_CTX_COMPACT_THRESHOLD
     ctx_compact_model: str = None
+    stats_by_model: dict = field(default_factory=dict)
     _hotkey_listener: object = None
 
     def __post_init__(self):
@@ -280,6 +281,7 @@ _COMMANDS = [
     "/load",
     "/resume",
     "/sessions",
+    "/stats",
     "/rename",
     "/tools",
     "/skill",
@@ -560,6 +562,172 @@ def _ctx_prompt_gauge(state: ChatState, use_color: bool) -> str:
         else:
             label = f"[ctx {tilde}{total:,} tokens]"
     return _meter_colored(label, percent, use_color) + " "
+
+
+# ---------------------------------------------------------------------------
+# Per-turn / session statistics (/stats)
+# ---------------------------------------------------------------------------
+
+
+def _stats_total(state: ChatState) -> dict:
+    """Aggregate session-wide stats across all models seen this session."""
+    total = {
+        "rounds": 0,
+        "eval_count": 0,
+        "eval_duration_ns": 0,
+        "prompt_eval_count": 0,
+        "prompt_eval_duration_ns": 0,
+    }
+    for m in (state.stats_by_model or {}).values():
+        total["rounds"] += m.get("rounds") or 0
+        total["eval_count"] += m.get("eval_count") or 0
+        total["eval_duration_ns"] += m.get("eval_duration_ns") or 0
+        total["prompt_eval_count"] += m.get("prompt_eval_count") or 0
+        total["prompt_eval_duration_ns"] += m.get("prompt_eval_duration_ns") or 0
+    return total
+
+
+def _accumulate_stats(state: ChatState, metrics: dict) -> None:
+    """Fold the last turn's round totals into the per-model session stats."""
+    if not metrics or not metrics.get("turn_rounds"):
+        return
+    entry = state.stats_by_model.setdefault(
+        state.model,
+        {
+            "rounds": 0,
+            "eval_count": 0,
+            "eval_duration_ns": 0,
+            "prompt_eval_count": 0,
+            "prompt_eval_duration_ns": 0,
+        },
+    )
+    entry["rounds"] += metrics.get("turn_rounds") or 0
+    entry["eval_count"] += metrics.get("turn_eval_count") or 0
+    entry["eval_duration_ns"] += metrics.get("turn_eval_duration_ns") or 0
+    entry["prompt_eval_count"] += metrics.get("turn_prompt_eval_count") or 0
+    entry["prompt_eval_duration_ns"] += metrics.get("turn_prompt_eval_duration_ns") or 0
+
+
+def _fmt_duration(ns) -> str:
+    if not ns:
+        return "n/a"
+    secs = ns / 1e9
+    if secs < 60:
+        return f"{secs:.1f}s"
+    m = int(secs // 60)
+    s = int(secs % 60)
+    return f"{m}m {s:02d}s"
+
+
+def _fmt_speed(tok_per_s) -> str:
+    if not tok_per_s or tok_per_s <= 0:
+        return "n/a"
+    if tok_per_s >= 1000:
+        return f"{tok_per_s / 1000:.1f}K tok/s"
+    return f"{tok_per_s:.0f} tok/s"
+
+
+def _fmt_count(n) -> str:
+    if n is None:
+        return "n/a"
+    return f"{int(n):,}"
+
+
+def _toks_per_sec(tokens, duration_ns) -> float:
+    if not tokens or not duration_ns:
+        return 0.0
+    return tokens / (duration_ns / 1e9)
+
+
+def _delta_pct(last, avg) -> float:
+    if not avg or avg <= 0 or not last:
+        return 0.0
+    return (last - avg) / avg * 100.0
+
+
+def _fmt_delta(pct: float, use_color: bool) -> str:
+    if pct > 0.5:
+        return color_util.colored(
+            f"   (vs avg ▲ {pct:.0f}% faster)", color_util.C_METER_LOW, use_color
+        )
+    if pct < -0.5:
+        return color_util.colored(
+            f"   (vs avg ▼ {abs(pct):.0f}% slower)", color_util.C_METER_HIGH, use_color
+        )
+    return color_util.colored("   (vs avg ≈)", color_util.C_METER_MID, use_color)
+
+
+def _cmd_stats(state: ChatState) -> None:
+    """Show the current model, last turn's per-round breakdown, and session averages."""
+    use_color = color_util.color_mode_enabled(state.color)
+    dim = lambda s: color_util.colored(s, color_util.C_THINK, use_color)
+    cyan = lambda s: color_util.colored(s, color_util.C_INPUT, use_color)
+
+    usage = state.ctx_usage
+
+    model_line = f"{dim('Model:'):<14} {cyan(state.model)}"
+    if usage and usage.get("prompt_eval_count"):
+        _ensure_ctx_max(state)
+        used = _ctx_usage_total(usage)
+        if state.ctx_max and used:
+            pct = round(used / state.ctx_max * 100)
+            model_line += f"   (ctx {used:,} / {state.ctx_max:,} · {pct}%)"
+        elif used:
+            model_line += f"   (ctx {used:,} tokens)"
+    print(model_line)
+
+    if not usage:
+        print("No model response yet this session.")
+        return
+
+    total = _stats_total(state)
+    avg_speed = _toks_per_sec(total["eval_count"], total["eval_duration_ns"])
+
+    rounds = usage.get("rounds") or []
+    rounds_model = usage.get("rounds_model") or state.model
+    if rounds:
+        turn_tokens = sum(r.get("eval_count") or 0 for r in rounds)
+        turn_time = sum(r.get("eval_duration_ns") or 0 for r in rounds)
+        turn_speed = _toks_per_sec(turn_tokens, turn_time)
+        turn_label = "1 round" if len(rounds) == 1 else f"{len(rounds)} rounds"
+        model_tag = "" if rounds_model == state.model else f" ({rounds_model})"
+        print()
+        print(
+            f"{dim('Last turn'):<10}{model_tag}: {dim(turn_label)}"
+            f" · {_fmt_duration(turn_time)} · {_fmt_speed(turn_speed)}"
+            f"{_fmt_delta(_delta_pct(turn_speed, avg_speed), use_color)}"
+        )
+        for i, r in enumerate(rounds, 1):
+            speed = _toks_per_sec(r.get("eval_count"), r.get("eval_duration_ns"))
+            prompt_speed = _toks_per_sec(
+                r.get("prompt_eval_count"), r.get("prompt_eval_duration_ns")
+            )
+            print(
+                f"  r{i} · {r.get('kind') or 'final answer'} · "
+                f"{_fmt_count(r.get('eval_count'))} tok · {_fmt_duration(r.get('eval_duration_ns'))}"
+                f" · {_fmt_speed(speed)}"
+                f"   (prompt {_fmt_count(r.get('prompt_eval_count'))} tok @ {_fmt_speed(prompt_speed)})"
+            )
+
+    if total["rounds"]:
+        print()
+        print(
+            f"{dim('Session avg:'):<12} {_fmt_speed(avg_speed)}"
+            f" · {_fmt_count(total['eval_count'])} tok"
+            f" · {_fmt_duration(total['eval_duration_ns'])}"
+            f" · {total['rounds']} rounds"
+        )
+        per_model = sorted(
+            state.stats_by_model.items(),
+            key=lambda kv: _toks_per_sec(kv[1].get("eval_count"), kv[1].get("eval_duration_ns")),
+            reverse=True,
+        )
+        for name, m in per_model:
+            speed = _toks_per_sec(m.get("eval_count"), m.get("eval_duration_ns"))
+            row = f"  {name}   {_fmt_speed(speed)} · {m.get('rounds', 0)} rounds"
+            if name == state.model:
+                row = color_util.colored(row, color_util.C_INPUT, use_color)
+            print(row)
 
 
 def _estimate_context_tokens(state: ChatState) -> int:
@@ -891,6 +1059,7 @@ def run_chat(state: ChatState):
                 state.stop_hotkey_listener()
             state.ctx_usage = metrics
             state.ctx_usage_model = state.model
+            _accumulate_stats(state, metrics)
             autosave_session(state)
             maybe_auto_compact(state)
         except EOFError:
@@ -940,6 +1109,7 @@ def _handle_command(line: str, state: ChatState) -> bool:
         state.ctx_usage = None
         state.session_id = new_session_id()
         state.session_created_at = time.time()
+        state.stats_by_model.clear()
         print("New session started. Previous session preserved; use /resume to restore it.")
 
     elif cmd == "/compact":
@@ -987,6 +1157,9 @@ def _handle_command(line: str, state: ChatState) -> bool:
     elif cmd == "/sessions":
         _cmd_sessions(arg, state)
 
+    elif cmd == "/stats":
+        _cmd_stats(state)
+
     elif cmd == "/rename":
         _cmd_rename(arg, state)
 
@@ -1021,6 +1194,7 @@ def _show_help():
     print("  /load <path>    Load a conversation from a JSON file")
     print("  /resume [id|title]  Resume a saved session (with no arg: picker; with a match: direct)")
     print("  /sessions       List all saved sessions")
+    print("  /stats          Show model, last turn's per-round breakdown, and session averages")
     print("  /rename <new title>  Rename the current session")
     print("  /rename <id-prefix> <new title>  Rename a stored session")
     print("  /tools loaded                    List loaded toolsets and their tools")
@@ -1152,6 +1326,7 @@ def _cmd_feed(path: str, state: ChatState):
         )
         state.ctx_usage = metrics
         state.ctx_usage_model = state.model
+        _accumulate_stats(state, metrics)
         autosave_session(state)
         maybe_auto_compact(state)
     except KeyboardInterrupt:
@@ -1211,6 +1386,15 @@ def serialize_session(
                 "eval_count": state.ctx_usage.get("eval_count") or 0,
             }
             data["ctx_usage_model"] = state.ctx_usage_model or state.model
+    if state.stats_by_model:
+        stats = {
+            "by_model": state.stats_by_model,
+            "model": (state.ctx_usage or {}).get("rounds_model") or state.model,
+        }
+        rounds = (state.ctx_usage or {}).get("rounds")
+        if rounds:
+            stats["rounds"] = rounds
+        data["stats"] = stats
     return data
 
 
@@ -1242,6 +1426,20 @@ def apply_session(state: ChatState, data: dict, source: str = "session") -> None
     else:
         state.ctx_usage = None
         state.ctx_usage_model = None
+    stored_stats = data.get("stats")
+    if stored_stats and isinstance(stored_stats, dict):
+        by_model = stored_stats.get("by_model")
+        if isinstance(by_model, dict):
+            state.stats_by_model = dict(by_model)
+        else:
+            state.stats_by_model = {}
+        if state.ctx_usage is not None and stored_stats.get("model") == state.model:
+            rounds = stored_stats.get("rounds")
+            if isinstance(rounds, list) and rounds:
+                state.ctx_usage["rounds"] = rounds
+                state.ctx_usage["rounds_model"] = stored_stats.get("model") or state.model
+    else:
+        state.stats_by_model = {}
     # Mode must be restored before tool reload so refresh_ollama_tools()
     # applies the plan-mode read-only filter to the reloaded tools.
     if "mode" in data and data.get("mode") in _MODES:

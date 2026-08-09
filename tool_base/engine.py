@@ -164,6 +164,10 @@ def run_with_tools(
     final_response = ""
     last_prompt_eval_count = None
     last_eval_count = None
+    last_eval_duration_ns = None
+    last_prompt_eval_duration_ns = None
+    turn_rounds = []
+    turn_elapsed_started = None
 
     def _current_mode() -> str:
         """Effective mode right now (may change mid-turn via the hotkey)."""
@@ -326,6 +330,13 @@ def run_with_tools(
         response_content = ""
         response_tool_calls = None
         think_text = ""
+        round_prompt_eval_count = None
+        round_eval_count = None
+        round_eval_duration_ns = None
+        round_prompt_eval_duration_ns = None
+        round_started = time.monotonic()
+        if turn_elapsed_started is None:
+            turn_elapsed_started = round_started
 
         tools_for_request = _refresh_tools_for_request()
 
@@ -346,6 +357,10 @@ def run_with_tools(
                         last_prompt_eval_count = chunk.prompt_eval_count
                     if getattr(chunk, "eval_count", None) is not None:
                         last_eval_count = chunk.eval_count
+                    if getattr(chunk, "eval_duration", None) is not None:
+                        last_eval_duration_ns = chunk.eval_duration
+                    if getattr(chunk, "prompt_eval_duration", None) is not None:
+                        last_prompt_eval_duration_ns = chunk.prompt_eval_duration
 
                     if verbose >= 3:
                         from .logging import _log_chunk
@@ -410,6 +425,21 @@ def run_with_tools(
         if metrics is not None:
             metrics["prompt_eval_count"] = last_prompt_eval_count
             metrics["eval_count"] = last_eval_count
+            metrics["eval_duration_ns"] = last_eval_duration_ns
+            metrics["prompt_eval_duration_ns"] = last_prompt_eval_duration_ns
+            metrics["last_round_kind"] = "tool call" if response_tool_calls else "final answer"
+            metrics["rounds_model"] = model
+
+        if metrics is not None:
+            turn_rounds.append(
+                {
+                    "kind": "tool call" if response_tool_calls else "final answer",
+                    "eval_count": last_eval_count,
+                    "eval_duration_ns": last_eval_duration_ns,
+                    "prompt_eval_count": last_prompt_eval_count,
+                    "prompt_eval_duration_ns": last_prompt_eval_duration_ns,
+                }
+            )
 
         if response_tool_calls:
             assistant_msg = {
@@ -592,6 +622,16 @@ def run_with_tools(
             final_response = response_content
             state_manager.transition_to(ExecutionState.IDLE)
             break
+
+    if metrics is not None:
+        metrics["rounds"] = list(turn_rounds)
+        metrics["turn_rounds"] = len(turn_rounds)
+        metrics["turn_eval_count"] = sum(r.get("eval_count") or 0 for r in turn_rounds)
+        metrics["turn_eval_duration_ns"] = sum(r.get("eval_duration_ns") or 0 for r in turn_rounds)
+        metrics["turn_prompt_eval_count"] = sum(r.get("prompt_eval_count") or 0 for r in turn_rounds)
+        metrics["turn_prompt_eval_duration_ns"] = sum(r.get("prompt_eval_duration_ns") or 0 for r in turn_rounds)
+        if turn_elapsed_started is not None:
+            metrics["turn_elapsed_s"] = time.monotonic() - turn_elapsed_started
 
     return final_response
 
