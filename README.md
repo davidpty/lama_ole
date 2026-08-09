@@ -294,7 +294,7 @@ In chat mode (`--chat`), lines starting with `/` are commands:
 | Command | Description |
 |---------|-------------|
 | `/feed <path>` | Read a file and send its content as a message |
-| `/clear` | Clear the conversation history (the previous session is preserved and can be restored with `/resume`) |
+| `/new` | Start a new session (the previous session is preserved and can be restored with `/resume`) |
 | `/compact [auto on\|off]` | Compact the context now (summarize older turns, keep recent verbatim), or toggle/show auto-compaction |
 | `/model <name>` | Switch to a different model |
 | `/plan` | Switch to plan mode (read-only tools only, no changes) |
@@ -445,7 +445,7 @@ and `/load`.
   longer match the new path automatically. Run `/resume` — sessions recorded
   elsewhere are listed (marked `[moved]`) and resuming one re-associates it
   to the current directory.
-* **`/clear`**: archives the current session (leaving it restorable) and
+* **`/new`**: archives the current session (leaving it restorable) and
   starts a fresh one.
 * **Titles**: sessions are titled from the first user message by default.
   `/rename <new title>` overrides it for the current session (persisted across

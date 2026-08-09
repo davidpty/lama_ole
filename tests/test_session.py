@@ -2,7 +2,7 @@
 
 Covers the shared serialize/apply round-trip, encoded-cwd grouping, the
 auto-save helper (writes/updates/skips-empty/disabled), most-recent session
-selection, cross-project resume with re-association, /clear archiving, and
+selection, cross-project resume with re-association, /new archiving, and
 the XDG-aware sessions directory resolution.
 """
 
@@ -335,12 +335,12 @@ class SessionStoreTest(unittest.TestCase):
         self.assertIn("s1", out)
         self.assertIn("session(s) stored in", out)
 
-    def test_clear_archives_and_starts_fresh(self):
+    def test_new_archives_and_starts_fresh(self):
         state = _make_state(sessions_dir=self.sessions_dir, session_id="s1")
         state.messages = [{"role": "user", "content": "keep me"}]
         chat.autosave_session(state)
-        state.messages.append({"role": "user", "content": "before clear"})
-        chat._handle_command("/clear", state)
+        state.messages.append({"role": "user", "content": "before new"})
+        chat._handle_command("/new", state)
         self.assertNotEqual(state.session_id, "s1")
         self.assertEqual(state.messages, [])
         self.assertTrue(os.path.isfile(self._session_path("s1")))

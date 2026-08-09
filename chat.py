@@ -271,7 +271,7 @@ def _bind_mode_toggle(state: ChatState) -> None:
 
 _COMMANDS = [
     "/feed",
-    "/clear",
+    "/new",
     "/compact",
     "/model",
     "/plan",
@@ -913,14 +913,14 @@ def _handle_command(line: str, state: ChatState) -> bool:
     elif cmd == "/help":
         _show_help()
 
-    elif cmd == "/clear":
+    elif cmd == "/new":
         if _has_conversation(state):
             autosave_session(state)
         state.messages.clear()
         state.ctx_usage = None
         state.session_id = new_session_id()
         state.session_created_at = time.time()
-        print("Conversation cleared. Previous session preserved; use /resume to restore it.")
+        print("New session started. Previous session preserved; use /resume to restore it.")
 
     elif cmd == "/compact":
         sub = arg.strip().lower()
@@ -992,7 +992,7 @@ def _show_help():
     print()
     print("Commands:")
     print("  /feed <path>    Read a file and inject its content as a message")
-    print("  /clear          Clear the conversation history (previous session is preserved)")
+    print("  /new            Start a new session (previous session is preserved)")
     print("  /compact [auto on|off]  Compact now, or toggle/show auto-compaction")
     print("  /model <name>   Switch to a different model")
     print("  /plan           Switch to plan mode (read-only tools, no changes)")
