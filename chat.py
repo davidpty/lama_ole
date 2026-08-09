@@ -26,6 +26,18 @@ from tool_base import (
     get_tools_of_module,
     peek_tools_of_module,
 )
+from tool_base.compaction import (
+    COMPACTION_SYSTEM_PROMPT,
+    SUMMARY_OUTPUT_TOKENS,
+    apply_compaction,
+    build_summary_prompt,
+    default_preserve_budget,
+    estimate_tokens,
+    find_previous_summary,
+    select_head_tail,
+    serialize_for_compaction,
+)
+from tool_base.logging import StateLogger
 from tool_base.engine import _print_diff_block
 
 import color_util
@@ -71,6 +83,10 @@ class ChatState:
     ctx_meter: bool = True
     ctx_max: int = None
     ctx_usage: dict = None
+    ctx_usage_model: str = None
+    ctx_compact: bool = False
+    ctx_compact_threshold: float = 0.75
+    ctx_compact_model: str = None
     _hotkey_listener: object = None
 
     def __post_init__(self):
@@ -254,6 +270,7 @@ def _bind_mode_toggle(state: ChatState) -> None:
 _COMMANDS = [
     "/feed",
     "/clear",
+    "/compact",
     "/model",
     "/plan",
     "/build",
@@ -500,20 +517,26 @@ def _ctx_usage_total(usage: dict):
 
 
 def _ctx_prompt_gauge(state: ChatState, use_color: bool) -> str:
-    """Compact gauge for the input prompt, e.g. '[ctx 12,345/32,768 ████░░░░░░ 37%] '."""
+    """Compact gauge for the input prompt, e.g. '[ctx 12,345/32,768 ████░░░░░░ 37%] '.
+
+    An approximate count (restored from a session whose model differs, or
+    invalidated by a mid-session /model switch) is shown with a tilde:
+    '[ctx ~12,345/32,768 ████░░░░░░ ~37%] '.
+    """
     total = _ctx_usage_total(state.ctx_usage)
     percent = None
     if total is None:
         label = "[ctx --]"
     else:
         _ensure_ctx_max(state)
+        tilde = "~" if (state.ctx_usage or {}).get("_estimated") else ""
         if state.ctx_max:
             percent = round(total / state.ctx_max * 100)
             filled = min(percent // 10, _BAR_WIDTH)
             bar = "█" * filled + "░" * (_BAR_WIDTH - filled)
-            label = f"[ctx {total:,}/{state.ctx_max:,} {bar} {percent}%]"
+            label = f"[ctx {tilde}{total:,}/{state.ctx_max:,} {bar} {tilde}{percent}%]"
         else:
-            label = f"[ctx {total:,} tokens]"
+            label = f"[ctx {tilde}{total:,} tokens]"
     return _meter_colored(label, percent, use_color) + " "
 
 
@@ -612,6 +635,155 @@ def _estimate_context_breakdown(messages: list, input_tokens: int) -> list:
     return result
 
 
+def _should_auto_compact(state: ChatState) -> bool:
+    """True when the context window crossed the auto-compaction threshold.
+
+    Requires auto-compaction to be enabled, a known window size, an
+    authoritative token count from the last turn, and that count to not be an
+    estimate (restored after a model change or invalidated by /model), so we
+    never auto-compact on approximate numbers.
+    """
+    if not state.ctx_compact:
+        return False
+    if (state.ctx_usage or {}).get("_estimated"):
+        return False
+    total = _ctx_usage_total(state.ctx_usage)
+    if not total:
+        return False
+    _ensure_ctx_max(state)
+    if not state.ctx_max:
+        return False
+    return total >= state.ctx_compact_threshold * state.ctx_max
+
+
+def run_compaction(state: ChatState, confirm: bool = True) -> bool:
+    """Compact the conversation: summarize the head, keep the tail verbatim.
+
+    The head (older turns) is serialized into labeled text and handed to the
+    summarizer model (``ctx_compact_model``, defaulting to the chat model),
+    which streams a structured anchored summary. On success the head is
+    replaced by a ``compacted`` user message and the recent tail stays
+    verbatim. Returns True when compaction ran.
+
+    The hotkey listener is parked for the whole call (confirmation prompt and
+    streaming) so typed-ahead text never races stdin.
+    """
+    state.hotkey_pause()
+    try:
+        use_color = color_util.color_mode_enabled(state.color)
+        _ensure_ctx_max(state)
+        system_messages = [m for m in state.messages if m.get("role") == "system"]
+        non_sys = [m for m in state.messages if m.get("role") != "system"]
+        head, tail = select_head_tail(
+            non_sys,
+            budget=default_preserve_budget(state.ctx_max),
+        )
+        head_text = serialize_for_compaction(head)
+        if not head or not head_text.strip():
+            print("No older context to compact.", file=sys.stderr)
+            return False
+
+        previous_summary = find_previous_summary(head)
+        prompt = build_summary_prompt(previous_summary, head_text)
+        est = estimate_tokens(COMPACTION_SYSTEM_PROMPT) + estimate_tokens(prompt)
+        if state.ctx_max and est + SUMMARY_OUTPUT_TOKENS > state.ctx_max:
+            print(
+                f"[ERROR] Conversation too large to compact: {est:,} tokens for the "
+                f"request plus {SUMMARY_OUTPUT_TOKENS:,} for the summary exceeds the "
+                f"{state.ctx_max:,} token window.",
+                file=sys.stderr,
+            )
+            return False
+
+        if confirm:
+            head_tokens = estimate_tokens(head_text)
+            tail_tokens = estimate_tokens(serialize_for_compaction(tail))
+            print(
+                f"Compacting {len(head)} messages (~{head_tokens:,} tokens) into a "
+                f"summary; keeping {len(tail)} recent messages (~{tail_tokens:,} "
+                f"tokens) verbatim.",
+                file=sys.stderr,
+            )
+            try:
+                answer = input("Compact context? (y/N): ").strip().lower()
+            except EOFError:
+                answer = "n"
+            except KeyboardInterrupt:
+                print("\nCompaction cancelled.", file=sys.stderr)
+                return False
+            if answer != "y":
+                print("Compaction cancelled.", file=sys.stderr)
+                return False
+
+        model = state.ctx_compact_model or state.model
+        output_logger = (
+            StateLogger(handle=state.output_file_handle)
+            if state.output_file_handle
+            else None
+        )
+        summary_parts = []
+        try:
+            stream = state.client.chat(
+                model=model,
+                messages=[
+                    {"role": "system", "content": COMPACTION_SYSTEM_PROMPT},
+                    {"role": "user", "content": prompt},
+                ],
+                stream=True,
+                options=state.options,
+                keep_alive=state.keep_alive,
+            )
+            try:
+                for chunk in stream:
+                    content = chunk.message.content
+                    if not content:
+                        continue
+                    summary_parts.append(content)
+                    print(
+                        color_util.colored(content, color_util.C_METER_MID, use_color),
+                        end="",
+                        flush=True,
+                    )
+                    if output_logger:
+                        output_logger.write_output(content)
+            finally:
+                if hasattr(stream, "close"):
+                    stream.close()
+            print()
+        except KeyboardInterrupt:
+            print("\nCompaction interrupted.", file=sys.stderr)
+            return False
+        except Exception as e:
+            print(f"\nError during compaction: {e}", file=sys.stderr)
+            return False
+
+        summary = "".join(summary_parts).strip()
+        if not summary:
+            print("[ERROR] Summarizer produced no output.", file=sys.stderr)
+            return False
+
+        state.messages = apply_compaction(system_messages, summary, tail)
+        state.ctx_usage = None
+        print(f"Context compacted: {len(head)} messages summarized.", file=sys.stderr)
+        autosave_session(state)
+        return True
+    finally:
+        state.hotkey_resume()
+
+
+def maybe_auto_compact(state: ChatState) -> None:
+    """Run compaction automatically when the threshold was crossed this turn."""
+    if not _should_auto_compact(state):
+        return
+    total = _ctx_usage_total(state.ctx_usage)
+    print(
+        f"Context usage reached {total:,} / {state.ctx_max:,} tokens "
+        f"({state.ctx_compact_threshold:.0%}).",
+        file=sys.stderr,
+    )
+    run_compaction(state, confirm=True)
+
+
 def run_chat(state: ChatState):
     print("Chat mode. Type /help for commands.")
     _install_readline_completion()
@@ -695,7 +867,9 @@ def run_chat(state: ChatState):
             finally:
                 state.stop_hotkey_listener()
             state.ctx_usage = metrics
+            state.ctx_usage_model = state.model
             autosave_session(state)
+            maybe_auto_compact(state)
         except EOFError:
             print()
             autosave_session(state)
@@ -745,6 +919,9 @@ def _handle_command(line: str, state: ChatState) -> bool:
         state.session_created_at = time.time()
         print("Conversation cleared. Previous session preserved; use /resume to restore it.")
 
+    elif cmd == "/compact":
+        run_compaction(state, confirm=True)
+
     elif cmd == "/feed":
         _cmd_feed(arg, state)
 
@@ -753,6 +930,10 @@ def _handle_command(line: str, state: ChatState) -> bool:
             print(f"Current model: {state.model}")
         else:
             state.model = arg
+            if state.ctx_usage and state.ctx_usage_model and state.ctx_usage_model != arg:
+                state.ctx_usage = dict(state.ctx_usage)
+                state.ctx_usage["_estimated"] = True
+                state.ctx_usage_model = arg
             print(f"Switched to model: {arg}")
 
     elif cmd == "/plan":
@@ -799,6 +980,7 @@ def _show_help():
     print("Commands:")
     print("  /feed <path>    Read a file and inject its content as a message")
     print("  /clear          Clear the conversation history (previous session is preserved)")
+    print("  /compact        Summarize older context into a compact summary (keep recent turns)")
     print("  /model <name>   Switch to a different model")
     print("  /plan           Switch to plan mode (read-only tools, no changes)")
     print("  /build          Switch to build mode (full tools, changes allowed)")
@@ -845,14 +1027,20 @@ def _cmd_context(arg: str, state: ChatState):
         return
     eval_count = state.ctx_usage.get("eval_count") or 0
     total = used + eval_count
+    note = " (estimate)" if (state.ctx_usage or {}).get("_estimated") else ""
     if state.ctx_max:
         pct = round(total / state.ctx_max * 100)
-        print(f"Context usage: {total:,} / {state.ctx_max:,} tokens ({pct}%)")
+        print(f"Context usage: {total:,} / {state.ctx_max:,} tokens ({pct}%){note}")
     else:
-        print(f"Context usage: {total:,} tokens (window size unknown)")
+        print(f"Context usage: {total:,} tokens (window size unknown){note}")
     breakdown = _estimate_context_breakdown(state.messages, used)
     for key, tokens, percent in breakdown:
         print(f"  {key}: {tokens:,} tokens ({percent}%)")
+    if state.ctx_compact and state.ctx_max:
+        print(
+            f"Auto-compaction: enabled (threshold {state.ctx_compact_threshold:.0%}, "
+            f"model {state.ctx_compact_model or state.model})"
+        )
 
 
 def _cmd_feed(path: str, state: ChatState):
@@ -914,7 +1102,9 @@ def _cmd_feed(path: str, state: ChatState):
             show_diff=state.show_diff,
         )
         state.ctx_usage = metrics
+        state.ctx_usage_model = state.model
         autosave_session(state)
+        maybe_auto_compact(state)
     except KeyboardInterrupt:
         while len(state.messages) > messages_before:
             state.messages.pop()
@@ -960,6 +1150,18 @@ def serialize_session(
         data["system_prompt"] = state.system_prompt
     if state.loaded_tool_modules:
         data["loaded_tool_modules"] = list(state.loaded_tool_modules)
+    if state.ctx_compact:
+        data["ctx_compact"] = True
+        data["ctx_compact_threshold"] = state.ctx_compact_threshold
+    if state.ctx_compact_model is not None:
+        data["ctx_compact_model"] = state.ctx_compact_model
+    if state.ctx_usage and not state.ctx_usage.get("_estimated"):
+        if state.ctx_usage.get("prompt_eval_count"):
+            data["ctx_usage"] = {
+                "prompt_eval_count": state.ctx_usage["prompt_eval_count"],
+                "eval_count": state.ctx_usage.get("eval_count") or 0,
+            }
+            data["ctx_usage_model"] = state.ctx_usage_model or state.model
     return data
 
 
@@ -970,7 +1172,6 @@ def apply_session(state: ChatState, data: dict, source: str = "session") -> None
     ignored so old-format files and forward compatibility both work.
     """
     state.messages = data.get("messages", [])
-    state.ctx_usage = None
     if data.get("session_id"):
         state.session_id = data["session_id"]
     if data.get("created_at"):
@@ -979,6 +1180,19 @@ def apply_session(state: ChatState, data: dict, source: str = "session") -> None
         state.session_title = data["title"]
     if "model" in data:
         state.model = data["model"]
+    stored_usage = data.get("ctx_usage")
+    stored_usage_model = data.get("ctx_usage_model")
+    if stored_usage and stored_usage.get("prompt_eval_count"):
+        if stored_usage_model and stored_usage_model == state.model:
+            state.ctx_usage = dict(stored_usage)
+            state.ctx_usage_model = stored_usage_model
+        else:
+            state.ctx_usage = dict(stored_usage)
+            state.ctx_usage["_estimated"] = True
+            state.ctx_usage_model = state.model
+    else:
+        state.ctx_usage = None
+        state.ctx_usage_model = None
     # Mode must be restored before tool reload so refresh_ollama_tools()
     # applies the plan-mode read-only filter to the reloaded tools.
     if "mode" in data and data.get("mode") in _MODES:
@@ -1000,6 +1214,15 @@ def apply_session(state: ChatState, data: dict, source: str = "session") -> None
         state.skill_text = data.get("skill_text")
     if "system_prompt" in data:
         state.system_prompt = data["system_prompt"]
+    if "ctx_compact" in data:
+        state.ctx_compact = bool(data["ctx_compact"])
+    if "ctx_compact_threshold" in data:
+        try:
+            state.ctx_compact_threshold = float(data["ctx_compact_threshold"])
+        except (TypeError, ValueError):
+            pass
+    if "ctx_compact_model" in data:
+        state.ctx_compact_model = data["ctx_compact_model"]
     _bind_mode_toggle(state)
 
 
@@ -1223,10 +1446,14 @@ def _replay_history(state: ChatState, use_color: bool) -> None:
         if role == "system":
             continue
         if role == "user":
-            print(
-                color_util.colored(">>> ", color_util.C_PROMPT, use_color)
-                + color_util.colored(content, color_util.C_INPUT, use_color)
-            )
+            if m.get("compacted"):
+                label = color_util.colored("[compacted context] ", color_util.C_METER_MID, use_color)
+                print(label + color_util.colored(content, color_util.C_OUTPUT, use_color))
+            else:
+                print(
+                    color_util.colored(">>> ", color_util.C_PROMPT, use_color)
+                    + color_util.colored(content, color_util.C_INPUT, use_color)
+                )
         elif role == "assistant":
             if state.show_thinking and m.get("thinking"):
                 print(color_util.colored(m["thinking"], color_util.C_THINK, use_color))

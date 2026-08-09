@@ -351,6 +351,27 @@ def build_parser():
              "The window size is taken from --num_ctx, LAMA_OLE_CTX_SIZE, or the running model"
     )
 
+    # Parameter: context compaction
+    parser.add_argument(
+        "--ctx-compact",
+        action=argparse.BooleanOptionalAction,
+        default=_env_bool("LAMA_OLE_CTX_COMPACT", False),
+        help="Enable auto-compaction: when the context window crosses the "
+             "threshold, summarize older context (keeping recent turns verbatim)"
+    )
+    parser.add_argument(
+        "--ctx-compact-threshold",
+        type=float,
+        default=_env_float("LAMA_OLE_CTX_COMPACT_THRESHOLD", 0.75),
+        help="Fraction of the context window at which auto-compaction triggers"
+    )
+    parser.add_argument(
+        "--ctx-compact-model",
+        type=str,
+        default=_env_str("LAMA_OLE_CTX_COMPACT_MODEL", None),
+        help="Model used to produce compaction summaries (default: the chat model)"
+    )
+
     # Parameter: safe
     parser.add_argument(
         "--safe",
@@ -869,6 +890,9 @@ def main():
                 session_autosave=args.autosave,
                 ctx_meter=args.ctx_meter,
                 ctx_max=_env_int("LAMA_OLE_CTX_SIZE", None),
+                ctx_compact=args.ctx_compact,
+                ctx_compact_threshold=args.ctx_compact_threshold,
+                ctx_compact_model=args.ctx_compact_model,
             )
             if args.resume:
                 resume = find_recent_session(sessions_dir, os.getcwd())
@@ -913,6 +937,7 @@ def main():
                         metrics=metrics,
                     )
                     state.ctx_usage = metrics
+                    state.ctx_usage_model = args.model
                     autosave_session(state)
                 except KeyboardInterrupt:
                     print(

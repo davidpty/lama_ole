@@ -9,6 +9,17 @@ from .mode_switch import (
     TypeAheadBuffer,
     ModeHotkeyListener,
 )
+from .compaction import (
+    serialize_for_compaction,
+    select_head_tail,
+    find_previous_summary,
+    build_summary_prompt,
+    apply_compaction,
+    estimate_tokens,
+    default_preserve_budget,
+    COMPACTION_SYSTEM_PROMPT,
+    SUMMARY_TEMPLATE,
+)
 
 __all__ = [
     "Tool",
@@ -36,4 +47,13 @@ __all__ = [
     "EscapeSequenceParser",
     "TypeAheadBuffer",
     "ModeHotkeyListener",
+    "serialize_for_compaction",
+    "select_head_tail",
+    "find_previous_summary",
+    "build_summary_prompt",
+    "apply_compaction",
+    "estimate_tokens",
+    "default_preserve_budget",
+    "COMPACTION_SYSTEM_PROMPT",
+    "SUMMARY_TEMPLATE",
 ]

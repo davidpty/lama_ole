@@ -295,6 +295,7 @@ In chat mode (`--chat`), lines starting with `/` are commands:
 |---------|-------------|
 | `/feed <path>` | Read a file and send its content as a message |
 | `/clear` | Clear the conversation history (the previous session is preserved and can be restored with `/resume`) |
+| `/compact` | Summarize older context into a compact summary, keeping recent turns verbatim |
 | `/model <name>` | Switch to a different model |
 | `/plan` | Switch to plan mode (read-only tools only, no changes) |
 | `/build` | Switch to build mode (full tools, changes allowed) |
@@ -336,11 +337,48 @@ In chat mode a context-window usage meter is shown by default:
   count; `/context off` and `/context on` toggle the meter.
 * Before each turn a warning is printed when the typed message is predicted
   to overflow the window.
+* The last-known usage is saved with the session and restored on `/resume` /
+  `/load`, so the gauge is meaningful right away. The count is exact when the
+  session's model is unchanged; after a model change (or a mid-session
+  `/model`) it is shown as an estimate with a tilde, e.g.
+  `[ctx ~12,345/32,768 ████░░░░░░ ~37%] `. The window size (`num_ctx`) does
+  not affect the count — only the percentage, which recomputes against the
+  current window.
 
 The window size is resolved in order: `--num_ctx`, `LAMA_OLE_CTX_SIZE`, the
 running model's allocated context (`ollama ps`), the model's `num_ctx`
 parameter, the model's declared context length, otherwise unknown (token
 counts are shown without a percentage).
+
+### Context compaction
+
+When the conversation grows too large for the context window, `/compact`
+summarizes the older turns into a single structured summary while keeping the
+most recent turns verbatim (mirroring how opencode compacts its sessions):
+
+* Older turns are serialized into labeled text (`[User]:`, `[Assistant]:`,
+  `[Assistant tool call]:`, `[Tool result]:`, ...), tool results are truncated
+  to 2000 characters, and the head is handed to the summarizer model.
+* The summarizer streams an **anchored** Markdown summary (Objective, Important
+  Details, Work State, Next Move, Relevant Files). If the conversation was
+  already compacted, the previous summary is passed as `<previous-summary>` and
+  updated instead of being nested.
+* The summarized head is replaced by a `compacted` user message and the recent
+  tail (last 2 turns, bounded by a token budget) stays verbatim. The meter
+  resets so usage is recomputed from the next request.
+* Summaries use the model from `--ctx-compact-model`, or the chat model by
+  default. Confirmation is always requested before tokens are spent.
+
+Auto-compaction triggers after a turn when the context usage crosses the
+threshold and asks for confirmation:
+
+| Option / env var | Default | Description |
+|------------------|---------|-------------|
+| `--ctx-compact` / `LAMA_OLE_CTX_COMPACT` | off | Enable auto-compaction on threshold crossing |
+| `--ctx-compact-threshold` / `LAMA_OLE_CTX_COMPACT_THRESHOLD` | `0.75` | Fraction of the window that triggers compaction |
+| `--ctx-compact-model` / `LAMA_OLE_CTX_COMPACT_MODEL` | chat model | Model used to produce summaries |
+
+Compaction configuration is saved with the session and restored on `/resume`.
 
 Tab completion is enabled in interactive mode: commands, `/tools`, `/skill` and
 `/systemprompt` subcommands, and file paths (for `/feed`, `/save`, `/load`,

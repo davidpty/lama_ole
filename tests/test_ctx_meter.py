@@ -86,6 +86,20 @@ def test_prompt_gauge_without_window():
     assert chat._ctx_prompt_gauge(st, use_color=False) == "[ctx 1,234 tokens] "
 
 
+def test_prompt_gauge_estimated_shows_tilde():
+    st = _state(client=_FakeClient())
+    st.ctx_max = 8192
+    st.ctx_usage = {"prompt_eval_count": 1000, "eval_count": 234, "_estimated": True}
+    assert chat._ctx_prompt_gauge(st, use_color=False) == "[ctx ~1,234/8,192 █░░░░░░░░░ ~15%] "
+
+
+def test_prompt_gauge_estimated_without_window():
+    st = _state(client=_FakeClient())
+    st.ctx_max = None
+    st.ctx_usage = {"prompt_eval_count": 1000, "eval_count": 234, "_estimated": True}
+    assert chat._ctx_prompt_gauge(st, use_color=False) == "[ctx ~1,234 tokens] "
+
+
 def test_prompt_gauge_colored():
     st = _state(client=_FakeClient())
     st.ctx_max = 100
