@@ -51,6 +51,13 @@ class TestSubcommandCompletion:
     def test_systemprompt_subcommand(self):
         assert chat._completion_candidates("/systemprompt u") == ["unset"]
 
+    def test_compact_subcommand(self):
+        assert chat._completion_candidates("/compact a") == ["auto"]
+
+    def test_compact_all_from_trailing_space(self):
+        matches = chat._completion_candidates("/compact ")
+        assert set(matches) == set(chat._COMMAND_SUBCOMMANDS["/compact"])
+
 
 class TestFilePathCompletion:
     def test_feed_completes_file(self, tmp_path, monkeypatch):

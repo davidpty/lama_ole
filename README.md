@@ -295,7 +295,7 @@ In chat mode (`--chat`), lines starting with `/` are commands:
 |---------|-------------|
 | `/feed <path>` | Read a file and send its content as a message |
 | `/clear` | Clear the conversation history (the previous session is preserved and can be restored with `/resume`) |
-| `/compact` | Summarize older context into a compact summary, keeping recent turns verbatim |
+| `/compact [auto on\|off]` | Compact the context now (summarize older turns, keep recent verbatim), or toggle/show auto-compaction |
 | `/model <name>` | Switch to a different model |
 | `/plan` | Switch to plan mode (read-only tools only, no changes) |
 | `/build` | Switch to build mode (full tools, changes allowed) |
@@ -366,7 +366,7 @@ most recent turns verbatim (mirroring how opencode compacts its sessions):
 * The summarized head is replaced by a `compacted` user message and the recent
   tail (last 2 turns, bounded by a token budget) stays verbatim. The meter
   resets so usage is recomputed from the next request.
-* Summaries use the model from `--ctx-compact-model`, or the chat model by
+* Summaries use the model from `--auto-compact-model`, or the chat model by
   default. Confirmation is always requested before tokens are spent.
 
 Auto-compaction triggers after a turn when the context usage crosses the
@@ -374,16 +374,20 @@ threshold and asks for confirmation:
 
 | Option / env var | Default | Description |
 |------------------|---------|-------------|
-| `--ctx-compact` / `LAMA_OLE_CTX_COMPACT` | off | Enable auto-compaction on threshold crossing |
-| `--ctx-compact-threshold` / `LAMA_OLE_CTX_COMPACT_THRESHOLD` | `0.75` | Fraction of the window that triggers compaction |
-| `--ctx-compact-model` / `LAMA_OLE_CTX_COMPACT_MODEL` | chat model | Model used to produce summaries |
+| `--auto-compact` / `LAMA_OLE_AUTO_COMPACT` | off | Enable auto-compaction on threshold crossing |
+| `--auto-compact-threshold` / `LAMA_OLE_AUTO_COMPACT_THRESHOLD` | `0.75` | Fraction of the window (in `(0, 1]`) that triggers compaction |
+| `--auto-compact-model` / `LAMA_OLE_AUTO_COMPACT_MODEL` | chat model | Model used to produce summaries |
+
+In chat mode `/compact auto on` / `/compact auto off` toggle auto-compaction
+at runtime and `/compact auto` shows the current setting.
 
 Compaction configuration is saved with the session and restored on `/resume`.
 
-Tab completion is enabled in interactive mode: commands, `/tools`, `/skill` and
-`/systemprompt` subcommands, and file paths (for `/feed`, `/save`, `/load`,
-`/skill load` and `/systemprompt`) are completed with Tab. Completion needs the
-`readline` module and is skipped automatically when stdin is not a terminal.
+Tab completion is enabled in interactive mode: commands, `/tools`, `/skill`,
+`/compact` and `/systemprompt` subcommands, and file paths (for `/feed`,
+`/save`, `/load`, `/skill load` and `/systemprompt`) are completed with Tab.
+Completion needs the `readline` module and is skipped automatically when stdin
+is not a terminal.
 
 ### Plan / build modes
 
@@ -499,6 +503,9 @@ and `/load`.
 | `--debug` | Initialize the environment and enter an interactive Python REPL for debugging | |
 | `--color MODE` | Colorize user input, thinking, and LLM output: `auto` (TTY only), `always`, `never`/`none` | `auto` |
 | `--ctx-meter` / `--no-ctx-meter` | Show the context-window usage meter in chat mode | on |
+| `--auto-compact` / `--no-auto-compact` | Enable auto-compaction on threshold crossing | off |
+| `--auto-compact-threshold FLOAT` | Fraction of the window (in `(0, 1]`) that triggers auto-compaction | `0.75` |
+| `--auto-compact-model MODEL` | Model used to produce compaction summaries | chat model |
 | `-v` to `-vvv` | Verbosity level (repeat for more) | silent |
 
 ### Verbosity Levels
@@ -628,6 +635,9 @@ the configured default.
 | `LAMA_OLE_COLOR` | string | `--color` (`auto`, `always`, `never` or `none`) |
 | `LAMA_OLE_CTX_METER` | boolean | `--ctx-meter` / `--no-ctx-meter` |
 | `LAMA_OLE_CTX_SIZE` | integer | (config-only, no flag) — force the meter's context window |
+| `LAMA_OLE_AUTO_COMPACT` | boolean | `--auto-compact` / `--no-auto-compact` |
+| `LAMA_OLE_AUTO_COMPACT_THRESHOLD` | number | `--auto-compact-threshold` (must be in `(0, 1]`) |
+| `LAMA_OLE_AUTO_COMPACT_MODEL` | string | `--auto-compact-model` |
 | `LAMA_OLE_TOOL` | space/comma-separated list | `--tool` (CLI appends, deduped) |
 | `LAMA_OLE_VISION_MODEL` | space/comma-separated list | `--vision_model` (CLI replaces) |
 | `LAMA_OLE_MAX_TOOL_ROUNDS` | integer | `--max_tool_rounds` |

@@ -16,12 +16,14 @@ if lama_ole_dir not in sys.path:
 import chat  # noqa: E402
 from tool_base.compaction import (  # noqa: E402
     COMPACTION_SYSTEM_PROMPT,
+    DEFAULT_CTX_COMPACT_THRESHOLD,
     SUMMARY_TEMPLATE,
     apply_compaction,
     build_summary_prompt,
     default_preserve_budget,
     estimate_tokens,
     find_previous_summary,
+    sanitize_ctx_threshold,
     select_head_tail,
     serialize_for_compaction,
 )
@@ -265,6 +267,50 @@ def test_should_auto_compact_disabled_or_unknown():
     st.ctx_compact = True
     st.ctx_max = None
     assert chat._should_auto_compact(st) is False
+
+
+def test_sanitize_ctx_threshold_accepts_valid():
+    assert sanitize_ctx_threshold(0.01) == 0.01
+    assert sanitize_ctx_threshold(1.0) == 1.0
+    assert sanitize_ctx_threshold("0.5") == 0.5
+    assert sanitize_ctx_threshold(0.75) == 0.75
+
+
+def test_sanitize_ctx_threshold_rejects_invalid(capsys):
+    assert sanitize_ctx_threshold(0) == DEFAULT_CTX_COMPACT_THRESHOLD
+    assert sanitize_ctx_threshold(-0.5) == DEFAULT_CTX_COMPACT_THRESHOLD
+    assert sanitize_ctx_threshold(1.5) == DEFAULT_CTX_COMPACT_THRESHOLD
+    assert sanitize_ctx_threshold("abc") == DEFAULT_CTX_COMPACT_THRESHOLD
+    assert sanitize_ctx_threshold(None) == DEFAULT_CTX_COMPACT_THRESHOLD
+    err = capsys.readouterr().err
+    assert err.count("Warning:") == 5
+
+
+def test_sanitize_ctx_threshold_custom_default(capsys):
+    assert sanitize_ctx_threshold(1.5, default=0.5) == 0.5
+    assert sanitize_ctx_threshold(0, default=0.9) == 0.9
+    assert sanitize_ctx_threshold(0.5, default=0.9) == 0.5
+
+
+def test_cmd_compact_auto_toggle(capsys):
+    st = _state()
+    assert st.ctx_compact is False
+    chat._handle_command("/compact auto on", st)
+    assert st.ctx_compact is True
+    assert "Auto-compaction enabled." in capsys.readouterr().out
+    chat._handle_command("/compact auto", st)
+    assert "Auto-compaction: enabled" in capsys.readouterr().out
+    chat._handle_command("/compact auto off", st)
+    assert st.ctx_compact is False
+    assert "Auto-compaction disabled." in capsys.readouterr().out
+    chat._handle_command("/compact auto off extra", st)
+    assert "Usage: /compact auto [on|off]" in capsys.readouterr().out
+
+
+def test_cmd_compact_bad_subcommand(capsys):
+    st = _state()
+    chat._handle_command("/compact wat", st)
+    assert "Usage: /compact [auto on|off]" in capsys.readouterr().out
 
 
 def test_session_round_trip_preserves_compaction():

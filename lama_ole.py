@@ -30,6 +30,8 @@ from tool_base import (
     set_vision_models,
     to_ollama_tools,
     run_with_tools,
+    sanitize_ctx_threshold,
+    DEFAULT_CTX_COMPACT_THRESHOLD,
 )
 import color_util
 from chat import (
@@ -353,22 +355,25 @@ def build_parser():
 
     # Parameter: context compaction
     parser.add_argument(
-        "--ctx-compact",
+        "--auto-compact",
         action=argparse.BooleanOptionalAction,
-        default=_env_bool("LAMA_OLE_CTX_COMPACT", False),
+        default=_env_bool("LAMA_OLE_AUTO_COMPACT", False),
         help="Enable auto-compaction: when the context window crosses the "
              "threshold, summarize older context (keeping recent turns verbatim)"
     )
     parser.add_argument(
-        "--ctx-compact-threshold",
-        type=float,
-        default=_env_float("LAMA_OLE_CTX_COMPACT_THRESHOLD", 0.75),
-        help="Fraction of the context window at which auto-compaction triggers"
+        "--auto-compact-threshold",
+        type=sanitize_ctx_threshold,
+        default=sanitize_ctx_threshold(
+            _env_float("LAMA_OLE_AUTO_COMPACT_THRESHOLD", DEFAULT_CTX_COMPACT_THRESHOLD)
+        ),
+        help="Fraction of the context window at which auto-compaction triggers "
+             "(must be in (0, 1])"
     )
     parser.add_argument(
-        "--ctx-compact-model",
+        "--auto-compact-model",
         type=str,
-        default=_env_str("LAMA_OLE_CTX_COMPACT_MODEL", None),
+        default=_env_str("LAMA_OLE_AUTO_COMPACT_MODEL", None),
         help="Model used to produce compaction summaries (default: the chat model)"
     )
 
@@ -890,9 +895,9 @@ def main():
                 session_autosave=args.autosave,
                 ctx_meter=args.ctx_meter,
                 ctx_max=_env_int("LAMA_OLE_CTX_SIZE", None),
-                ctx_compact=args.ctx_compact,
-                ctx_compact_threshold=args.ctx_compact_threshold,
-                ctx_compact_model=args.ctx_compact_model,
+                ctx_compact=args.auto_compact,
+                ctx_compact_threshold=args.auto_compact_threshold,
+                ctx_compact_model=args.auto_compact_model,
             )
             if args.resume:
                 resume = find_recent_session(sessions_dir, os.getcwd())

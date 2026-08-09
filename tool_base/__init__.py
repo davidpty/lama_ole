@@ -17,6 +17,8 @@ from .compaction import (
     apply_compaction,
     estimate_tokens,
     default_preserve_budget,
+    sanitize_ctx_threshold,
+    DEFAULT_CTX_COMPACT_THRESHOLD,
     COMPACTION_SYSTEM_PROMPT,
     SUMMARY_TEMPLATE,
 )
@@ -54,6 +56,8 @@ __all__ = [
     "apply_compaction",
     "estimate_tokens",
     "default_preserve_budget",
+    "sanitize_ctx_threshold",
+    "DEFAULT_CTX_COMPACT_THRESHOLD",
     "COMPACTION_SYSTEM_PROMPT",
     "SUMMARY_TEMPLATE",
 ]

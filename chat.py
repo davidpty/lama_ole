@@ -28,12 +28,14 @@ from tool_base import (
 )
 from tool_base.compaction import (
     COMPACTION_SYSTEM_PROMPT,
+    DEFAULT_CTX_COMPACT_THRESHOLD,
     SUMMARY_OUTPUT_TOKENS,
     apply_compaction,
     build_summary_prompt,
     default_preserve_budget,
     estimate_tokens,
     find_previous_summary,
+    sanitize_ctx_threshold,
     select_head_tail,
     serialize_for_compaction,
 )
@@ -85,7 +87,7 @@ class ChatState:
     ctx_usage: dict = None
     ctx_usage_model: str = None
     ctx_compact: bool = False
-    ctx_compact_threshold: float = 0.75
+    ctx_compact_threshold: float = DEFAULT_CTX_COMPACT_THRESHOLD
     ctx_compact_model: str = None
     _hotkey_listener: object = None
 
@@ -289,6 +291,7 @@ _COMMANDS = [
 ]
 
 _COMMAND_SUBCOMMANDS = {
+    "/compact": ["auto"],
     "/tools": ["loaded", "available", "show", "all", "load", "unload"],
     "/skill": ["list", "load", "unload", "show"],
     "/systemprompt": ["show", "unset"],
@@ -920,7 +923,17 @@ def _handle_command(line: str, state: ChatState) -> bool:
         print("Conversation cleared. Previous session preserved; use /resume to restore it.")
 
     elif cmd == "/compact":
-        run_compaction(state, confirm=True)
+        sub = arg.strip().lower()
+        if not sub:
+            run_compaction(state, confirm=True)
+        elif sub == "auto" or sub.startswith("auto "):
+            _cmd_compact_auto(sub.split(maxsplit=1)[1] if sub != "auto" else "", state)
+        else:
+            print("Usage: /compact [auto on|off]")
+            print("  /compact          Compact the context now (ask for confirmation)")
+            print("  /compact auto     Show whether auto-compaction is enabled")
+            print("  /compact auto on  Enable auto-compaction on threshold crossing")
+            print("  /compact auto off Disable auto-compaction")
 
     elif cmd == "/feed":
         _cmd_feed(arg, state)
@@ -980,7 +993,7 @@ def _show_help():
     print("Commands:")
     print("  /feed <path>    Read a file and inject its content as a message")
     print("  /clear          Clear the conversation history (previous session is preserved)")
-    print("  /compact        Summarize older context into a compact summary (keep recent turns)")
+    print("  /compact [auto on|off]  Compact now, or toggle/show auto-compaction")
     print("  /model <name>   Switch to a different model")
     print("  /plan           Switch to plan mode (read-only tools, no changes)")
     print("  /build          Switch to build mode (full tools, changes allowed)")
@@ -1041,6 +1054,22 @@ def _cmd_context(arg: str, state: ChatState):
             f"Auto-compaction: enabled (threshold {state.ctx_compact_threshold:.0%}, "
             f"model {state.ctx_compact_model or state.model})"
         )
+
+
+def _cmd_compact_auto(arg: str, state: ChatState):
+    arg = arg.strip().lower()
+    if arg == "on":
+        state.ctx_compact = True
+        print("Auto-compaction enabled.")
+    elif arg == "off":
+        state.ctx_compact = False
+        print("Auto-compaction disabled.")
+    elif not arg:
+        print(f"Auto-compaction: {'enabled' if state.ctx_compact else 'disabled'} "
+              f"(threshold {state.ctx_compact_threshold:.0%}, "
+              f"model {state.ctx_compact_model or state.model})")
+    else:
+        print("Usage: /compact auto [on|off]")
 
 
 def _cmd_feed(path: str, state: ChatState):
@@ -1217,10 +1246,9 @@ def apply_session(state: ChatState, data: dict, source: str = "session") -> None
     if "ctx_compact" in data:
         state.ctx_compact = bool(data["ctx_compact"])
     if "ctx_compact_threshold" in data:
-        try:
-            state.ctx_compact_threshold = float(data["ctx_compact_threshold"])
-        except (TypeError, ValueError):
-            pass
+        state.ctx_compact_threshold = sanitize_ctx_threshold(
+            data["ctx_compact_threshold"], state.ctx_compact_threshold
+        )
     if "ctx_compact_model" in data:
         state.ctx_compact_model = data["ctx_compact_model"]
     _bind_mode_toggle(state)

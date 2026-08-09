@@ -11,6 +11,7 @@ The streaming driver lives in ``chat.py`` (``run_compaction``).
 
 import json
 import re
+import sys
 import time
 
 COMPACTION_SYSTEM_PROMPT = """You are an anchored context summarization assistant for coding sessions.
@@ -64,10 +65,35 @@ SUMMARY_OUTPUT_TOKENS = 4096
 
 _COMPACTED_KEY = "compacted"
 
+DEFAULT_CTX_COMPACT_THRESHOLD = 0.75
+
 _WRAPPED_RE = re.compile(
     r"^([0-9a-f]{15}) (Success|Error|Result) ([0-9a-f]{15}) (.*) ([0-9a-f]{15})$",
     re.DOTALL,
 )
+
+
+def sanitize_ctx_threshold(value, default=DEFAULT_CTX_COMPACT_THRESHOLD):
+    """Validate an auto-compaction threshold and return a usable float.
+
+    The threshold must be a number in the open interval (0, 1]. Out-of-range
+    or non-numeric values print a warning and fall back to ``default``,
+    mirroring the warn-and-keep-default behavior of the ``_env_*`` helpers in
+    ``lama_ole.py``. Used at every boundary where a threshold can enter the
+    program: the ``--auto-compact-threshold`` CLI flag, its env override, and
+    session files restored via ``apply_session``.
+    """
+    try:
+        value = float(value)
+    except (TypeError, ValueError):
+        print(f"Warning: ignoring invalid auto-compaction threshold: {value!r} "
+              f"(must be a number, using {default})", file=sys.stderr)
+        return float(default)
+    if not 0 < value <= 1:
+        print(f"Warning: ignoring invalid auto-compaction threshold: {value!r} "
+              f"(must be in (0, 1], using {default})", file=sys.stderr)
+        return float(default)
+    return value
 
 
 def estimate_tokens(text: str) -> int:
