@@ -302,6 +302,8 @@ In chat mode (`--chat`), lines starting with `/` are commands:
 | `/load <path>` | Load a conversation from a JSON file (restores the active skill, system prompt and re-loads toolsets) |
 | `/resume [match]` | Resume a saved session; without an argument it lists sessions and prompts, with a session-id or title substring it loads directly |
 | `/sessions` | List all saved sessions |
+| `/rename <new title>` | Rename the current session (persists across autosaves) |
+| `/rename <id-prefix> <new title>` | Rename a stored session by session-id prefix |
 | `/tools loaded` | List loaded toolsets and their tools |
 | `/tools available` | List toolsets available to load |
 | `/tools show <toolset>` | List all tools of one toolset |
@@ -403,8 +405,15 @@ and `/load`.
   to the current directory.
 * **`/clear`**: archives the current session (leaving it restorable) and
   starts a fresh one.
+* **Titles**: sessions are titled from the first user message by default.
+  `/rename <new title>` overrides it for the current session (persisted across
+  autosaves), and `/rename <id-prefix> <new title>` renames any stored session
+  by its session-id prefix. A renamed title is kept as-is; unrenamed sessions
+  keep deriving from their first message.
 * **`/save <path>` / `/load <path>`**: explicit portable snapshots for
   sharing or backup; they remain independent of the automatic sessions.
+  `/load` first archives the current conversation to its auto-save slot, so a
+  resumed session is never silently overwritten.
 
 ## Configuration Options
 

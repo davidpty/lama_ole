@@ -345,6 +345,109 @@ class SessionStoreTest(unittest.TestCase):
         self.assertEqual(state.messages, [])
         self.assertTrue(os.path.isfile(self._session_path("s1")))
 
+    def test_load_archives_previous_conversation(self):
+        state = _make_state(sessions_dir=self.sessions_dir, session_id="s1")
+        state.messages = [{"role": "user", "content": "keep me"}]
+        snap = os.path.join(self._tmp, "snap.json")
+        chat._cmd_save(snap, state)
+        state.messages.append({"role": "user", "content": "before load"})
+
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            chat._cmd_load(snap, state)
+
+        self.assertIn("archived", buf.getvalue())
+        self.assertEqual(state.session_id, "s1")
+        self.assertEqual(
+            [m["content"] for m in state.messages if m["role"] == "user"],
+            ["keep me"],
+        )
+        with open(self._session_path("s1"), encoding="utf-8") as f:
+            archived = json.load(f)
+        self.assertEqual(
+            [m["content"] for m in archived["messages"] if m["role"] == "user"],
+            ["keep me", "before load"],
+        )
+
+    def test_load_empty_session_does_not_archive(self):
+        state = _make_state(sessions_dir=self.sessions_dir, session_id="s1")
+        state.messages = [{"role": "user", "content": "snapshot"}]
+        snap = os.path.join(self._tmp, "snap.json")
+        chat._cmd_save(snap, state)
+
+        fresh = _make_state(sessions_dir=self.sessions_dir, session_id="s2")
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            chat._cmd_load(snap, fresh)
+        self.assertNotIn("archived", buf.getvalue())
+        self.assertFalse(os.path.exists(self._session_path("s2")))
+
+    def test_rename_current_session_persists_title(self):
+        state = _make_state(sessions_dir=self.sessions_dir, session_id="s1")
+        state.messages = [{"role": "user", "content": "original title"}]
+        chat.autosave_session(state)
+
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            chat._cmd_rename("my project", state)
+        self.assertIn("Renamed current session to 'my project'", buf.getvalue())
+
+        with open(self._session_path("s1"), encoding="utf-8") as f:
+            data = json.load(f)
+        self.assertEqual(data["title"], "my project")
+
+        chat.autosave_session(state)
+        with open(self._session_path("s1"), encoding="utf-8") as f:
+            data = json.load(f)
+        self.assertEqual(data["title"], "my project")
+
+    def test_rename_stored_session_by_id_prefix(self):
+        state = _make_state(sessions_dir=self.sessions_dir, session_id="s1")
+        state.messages = [{"role": "user", "content": "keep me"}]
+        chat.autosave_session(state)
+        state2 = _make_state(sessions_dir=self.sessions_dir, session_id="s2")
+        state2.messages = [{"role": "user", "content": "other"}]
+        chat.autosave_session(state2)
+
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            chat._cmd_rename("s1 renamed session", state2)
+
+        with open(self._session_path("s1"), encoding="utf-8") as f:
+            data = json.load(f)
+        self.assertEqual(data["title"], "renamed session")
+        self.assertNotIn("Renamed current", buf.getvalue())
+
+    def test_rename_ambiguous_prefix(self):
+        state = _make_state(sessions_dir=self.sessions_dir, session_id="s1")
+        state.messages = [{"role": "user", "content": "a"}]
+        chat.autosave_session(state)
+        state2 = _make_state(sessions_dir=self.sessions_dir, session_id="s2")
+        state2.messages = [{"role": "user", "content": "b"}]
+        chat.autosave_session(state2)
+
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            chat._cmd_rename("s new", state2)
+        self.assertIn("Ambiguous", buf.getvalue())
+        with open(self._session_path("s1"), encoding="utf-8") as f:
+            self.assertEqual(json.load(f)["title"], "a")
+
+    def test_rename_survives_resume_and_sessions_listing(self):
+        state = _make_state(sessions_dir=self.sessions_dir, session_id="s1")
+        state.messages = [{"role": "user", "content": "derived title"}]
+        chat.autosave_session(state)
+        chat._cmd_rename("project planning", state)
+
+        resumed = _make_state(sessions_dir=self.sessions_dir)
+        chat._cmd_resume("s1", resumed)
+        self.assertEqual(resumed.session_title, "project planning")
+
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            chat._cmd_sessions("", resumed)
+        self.assertIn("project planning", buf.getvalue())
+
 
 class SessionsDirTest(unittest.TestCase):
     def test_xdg_data_home(self):

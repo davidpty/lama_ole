@@ -67,6 +67,7 @@ class ChatState:
     session_id: str = None
     session_created_at: float = None
     session_autosave: bool = True
+    session_title: str = None
     ctx_meter: bool = True
     ctx_max: int = None
     ctx_usage: dict = None
@@ -260,6 +261,7 @@ _COMMANDS = [
     "/load",
     "/resume",
     "/sessions",
+    "/rename",
     "/tools",
     "/skill",
     "/systemprompt",
@@ -771,6 +773,9 @@ def _handle_command(line: str, state: ChatState) -> bool:
     elif cmd == "/sessions":
         _cmd_sessions(arg, state)
 
+    elif cmd == "/rename":
+        _cmd_rename(arg, state)
+
     elif cmd == "/tools":
         _cmd_tools(arg, state)
 
@@ -801,6 +806,8 @@ def _show_help():
     print("  /load <path>    Load a conversation from a JSON file")
     print("  /resume [id|title]  Resume a saved session (with no arg: picker; with a match: direct)")
     print("  /sessions       List all saved sessions")
+    print("  /rename <new title>  Rename the current session")
+    print("  /rename <id-prefix> <new title>  Rename a stored session")
     print("  /tools loaded                    List loaded toolsets and their tools")
     print("  /tools available                 List toolsets available to load")
     print("  /tools show <toolset>            List all tools of one toolset")
@@ -935,7 +942,7 @@ def serialize_session(
         "messages": state.messages,
         "updated_at": time.time(),
     }
-    title = _session_title(state)
+    title = state.session_title or _session_title(state)
     if title:
         data["title"] = title
     if state.mode != "build":
@@ -968,6 +975,8 @@ def apply_session(state: ChatState, data: dict, source: str = "session") -> None
         state.session_id = data["session_id"]
     if data.get("created_at"):
         state.session_created_at = data["created_at"]
+    if data.get("title"):
+        state.session_title = data["title"]
     if "model" in data:
         state.model = data["model"]
     # Mode must be restored before tool reload so refresh_ollama_tools()
@@ -1026,6 +1035,8 @@ def _cmd_load(path: str, state: ChatState):
     except Exception as e:
         print(f"Error loading conversation: {e}")
         return
+    if _has_conversation(state) and autosave_session(state):
+        print("Previous conversation archived; use /resume to restore it.")
     apply_session(state, data, source=path)
     print(f"Loaded conversation with {len(state.messages)} messages")
     _replay_history(state, color_util.color_mode_enabled(state.color))
@@ -1082,24 +1093,25 @@ def _write_session_file(path: str, data: dict) -> None:
     os.replace(tmp, path)
 
 
-def autosave_session(state: ChatState) -> None:
+def autosave_session(state: ChatState) -> bool:
     """Persist the current session to disk (best-effort).
 
     No-op unless sessions are configured, a session id exists, auto-save is
     enabled, and the conversation has at least one non-system message.
+    Returns True when a session file was actually written.
     """
     if not state.sessions_dir or not state.session_id:
-        return
+        return False
     if not state.session_autosave:
-        return
+        return False
     if not _has_conversation(state):
-        return
+        return False
     dirpath = session_dir_for(os.getcwd(), state.sessions_dir)
     try:
         os.makedirs(dirpath, exist_ok=True)
     except OSError as e:
         print(f"Error creating sessions directory: {e}", file=sys.stderr)
-        return
+        return False
     data = serialize_session(
         state,
         session_id=state.session_id,
@@ -1111,6 +1123,8 @@ def autosave_session(state: ChatState) -> None:
         _write_session_file(path, data)
     except OSError as e:
         print(f"Error saving session: {e}", file=sys.stderr)
+        return False
+    return True
 
 
 def find_recent_session(sessions_dir: str, cwd: str):
@@ -1330,6 +1344,60 @@ def _cmd_sessions(arg: str, state: ChatState):
         index += 1
         _print_session(index, data, current=False)
     print(f"\n{index} session(s) stored in {state.sessions_dir}")
+
+
+def _cmd_rename(arg: str, state: ChatState):
+    """Rename the current session or a stored one.
+
+    ``/rename <new title>`` renames the live session (persisted immediately).
+    ``/rename <id-prefix> <new title>`` renames any stored session whose
+    session id starts with the given prefix; the title may contain spaces.
+    """
+    if not state.sessions_dir:
+        print("Sessions directory is not configured.")
+        return
+    arg = arg.strip()
+    if not arg:
+        print("Usage: /rename <new title>  or  /rename <id-prefix> <new title>")
+        return
+
+    parts = arg.split(maxsplit=1)
+    id_cands = [
+        pd for pd in _list_session_files(state.sessions_dir)
+        if (pd[1].get("session_id") or "").lower().startswith(parts[0].lower())
+    ]
+    if len(parts) > 1 and id_cands:
+        if len(id_cands) > 1:
+            ids = ", ".join(sorted(pd[1]["session_id"][:8] for pd in id_cands))
+            print(f"Ambiguous id prefix '{parts[0]}' matches: {ids}")
+            return
+        path, data = id_cands[0]
+        old = data.get("title") or "(untitled)"
+        new_title = parts[1].strip()
+        if not new_title:
+            print("Usage: /rename <id-prefix> <new title>")
+            return
+        data["title"] = new_title
+        data["updated_at"] = time.time()
+        try:
+            _write_session_file(path, data)
+        except OSError as e:
+            print(f"Error renaming session: {e}", file=sys.stderr)
+            return
+        print(f"Renamed '{old}' to '{new_title}'.")
+        return
+
+    if id_cands and len(parts) == 1:
+        print(
+            f"Session '{parts[0]}' matches a stored session; use "
+            f"/rename <id> <new title> to rename it, or give a longer title "
+            f"for the current session."
+        )
+        return
+
+    state.session_title = arg
+    autosave_session(state)
+    print(f"Renamed current session to '{arg}'.")
 
 
 def _default_skills_dir(state: ChatState) -> str:
