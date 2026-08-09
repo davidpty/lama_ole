@@ -30,7 +30,7 @@ from tool_base import (
     to_ollama_tools,
     run_with_tools,
 )
-from chat import ChatState, run_chat
+from chat import ChatState, run_chat, _drop_incomplete_trailing_messages
 
 # ---------------------------------------------------------------------------
 # Configuration defaults (env vars + config files)
@@ -150,7 +150,7 @@ def build_parser():
     parser.add_argument(
         "-V", "--version",
         action="version",
-        version="0.0.46"
+        version="0.0.47"
     )
     # Define arguments
     parser.add_argument(
@@ -736,7 +736,7 @@ def main():
             )
             if content.strip():
                 user_msg = {"role": "user", "content": content}
-                messages_before = len(state.messages)
+                state.stamp_message(user_msg)
                 state.messages.append(user_msg)
                 state.log_ndjson(user_msg)
                 try:
@@ -771,8 +771,11 @@ def main():
                         file=sys.stderr,
                     )
                     state.state_manager.reset()
-                    while len(state.messages) > messages_before:
-                        state.messages.pop()
+                    # Partial rollback: keep the user message (and the system
+                    # prompt that run_with_tools prepended for this turn) plus
+                    # any completed tool rounds; drop only a trailing tool call
+                    # that never got its result.
+                    _drop_incomplete_trailing_messages(state, user_msg)
             run_chat(state)
         else:
             from tool_base.logging import _log_ndjson_message

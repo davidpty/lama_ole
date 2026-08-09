@@ -56,6 +56,9 @@ class ChatState:
     ndjson_log_file_handle: object = None
     color: object = "auto"
     state_manager: StateManager = field(default_factory=StateManager)
+    _last_cut_messages: list = field(default_factory=list)
+    _last_cut_indices: list = None  # message indices removed by the last /cut
+
 
     def __post_init__(self):
         if self.ndjson_log_path and self.ndjson_log_file_handle is None:
@@ -78,6 +81,16 @@ class ChatState:
             self.ndjson_log_file_handle.flush()
         except Exception as e:
             print(f"Error writing ndjson log: {e}", file=sys.stderr)
+
+    @staticmethod
+    def stamp_message(msg) -> None:
+        """Attach the event time to a message dict (idempotent).
+
+        Used by /history so each entry can show when the event happened.
+        Existing timestamps (e.g. restored by /load) are left untouched.
+        """
+        if isinstance(msg, dict) and "timestamp" not in msg:
+            msg["timestamp"] = time.strftime("%Y-%m-%d %H:%M:%S")
 
     def close(self):
         if self.ndjson_log_file_handle is not None:
@@ -112,6 +125,51 @@ class ChatState:
         """
         self.ollama_tools = to_ollama_tools(self.loaded_tools) if self.loaded_tools else None
 
+    def get_history_entries(self):
+        """Returns a list of viewable history entries with numbering and type info."""
+        M = len(self.messages)
+        entries = []
+        for i, msg in enumerate(self.messages):
+            # Numbering: Index 0 -> M, Index M-1 -> 1
+            num = M - i
+            role = msg.get("role")
+            content = msg.get("content", "")
+
+            if role == "user":
+                entries.append({"num": num, "type": "user", "msg": msg})
+            elif role == "system":
+                # System messages are usually not part of the visible history in REPL
+                continue
+            elif role == "assistant":
+                # Check for thinking process (Ollama format)
+                if isinstance(content, dict) and "thinking" in content:
+                    entries.append({"num": num, "type": "thinking", "msg": msg})
+                elif isinstance(content, str) and "thought:" in content: # fallback if not structured
+                     entries.append({"num": num, "type": "thinking", "msg": msg})
+                else:
+                    # Check for tool calls
+                    if "tool_calls" in msg or (isinstance(content, dict) and "tool_calls" in content):
+                        entries.append({"num": num, "type": "toolcall", "msg": msg})
+                    else:
+                        entries.append({"num": num, "type": "output", "msg": msg})
+            elif role == "tool":
+                entries.append({"num": num, "type": "tool_result", "msg": msg})
+
+        return entries
+
+    def undo_cut(self):
+        """Restores the messages removed by the last /cut command."""
+        if self._last_cut_messages and self._last_cut_indices:
+            for idx, msg in sorted(
+                zip(self._last_cut_indices, self._last_cut_messages)
+            ):
+                self.messages.insert(idx, msg)
+            self._last_cut_messages = []
+            self._last_cut_indices = None
+            return True
+        return False
+
+
 
 _COMMANDS = [
     "/feed",
@@ -123,6 +181,8 @@ _COMMANDS = [
     "/skill",
     "/systemprompt",
     "/context",
+    "/history",
+    "/cut",
     "/help",
     "/exit",
     "/quit",
@@ -224,6 +284,65 @@ def _install_readline_completion() -> None:
         readline.parse_and_bind("tab: complete")
 
 
+def _drop_incomplete_trailing_messages(state, user_msg):
+    """Remove trailing messages that belong to an incomplete tool round.
+
+    An assistant tool-call message must be followed by one tool result per
+    announced call. If the round was interrupted mid-execution (or its results
+    were never appended), the partial results and the tool-call message are
+    dropped so the history never contains an orphaned tool call. Completed
+    rounds (tool call + tool results) are preserved. Stops at ``user_msg`` so
+    the turn's user message and everything before it is never touched.
+    """
+    msgs = state.messages
+    # Walk back past any tool results to the assistant message that announced
+    # the current round.
+    idx = len(msgs) - 1
+    while idx >= 0 and msgs[idx] is not user_msg and msgs[idx].get("role") == "tool":
+        idx -= 1
+    if (
+        idx >= 0
+        and msgs[idx] is not user_msg
+        and msgs[idx].get("role") == "assistant"
+        and msgs[idx].get("tool_calls")
+    ):
+        n_calls = len(msgs[idx].get("tool_calls") or [])
+        n_results = len(msgs) - 1 - idx
+        if n_results < n_calls:
+            # The round is incomplete: drop the partial results and the
+            # assistant tool-call message that announced them.
+            del msgs[idx:]
+
+
+def _rollback_interrupted_turn(state, e, user_msg, messages_before):
+    """Report an interrupt and roll back the incomplete part of the turn.
+
+    Keeps ``user_msg`` — the user message appended this turn — together with
+    everything that came before it (including the system prompt that
+    ``run_with_tools`` prepends when none existed yet) and every *completed*
+    tool round (assistant tool call + tool results). Only the incomplete part
+    is dropped: an interrupted model response was never written to the history,
+    and a tool round whose results were not all appended is removed so no
+    orphaned tool call stays visible in ``/history``.
+
+    If no user message was added this turn, everything appended since
+    ``messages_before`` is removed instead.
+    """
+    if isinstance(e, ExecutionInterrupted) and e.state not in (None, ExecutionState.IDLE):
+        print(
+            f"\nInterrupted during {e.state.name.lower()}. Returning to prompt.",
+            file=sys.stderr,
+        )
+    else:
+        print("\nInterrupted.")
+    state.state_manager.reset()
+    if user_msg is None:
+        while len(state.messages) > messages_before:
+            state.messages.pop()
+        return
+    _drop_incomplete_trailing_messages(state, user_msg)
+
+
 def run_chat(state: ChatState):
     print("Chat mode. Type /help for commands.")
     _install_readline_completion()
@@ -234,6 +353,7 @@ def run_chat(state: ChatState):
         # Snapshot before reading input so an interrupt either at the prompt or
         # during the turn only rolls back what this iteration added.
         messages_before = len(state.messages)
+        user_msg = None
         try:
             line = input(prompt)
 
@@ -247,6 +367,7 @@ def run_chat(state: ChatState):
                 continue
 
             user_msg = {"role": "user", "content": stripped}
+            state.stamp_message(user_msg)
             state.messages.append(user_msg)
             state.log_ndjson(user_msg)
 
@@ -286,26 +407,21 @@ def run_chat(state: ChatState):
         except KeyboardInterrupt as e:
             # A second Ctrl-C while we clean up must not kill the REPL.
             try:
-                if isinstance(e, ExecutionInterrupted) and e.state not in (None, ExecutionState.IDLE):
-                    print(
-                        f"\nInterrupted during {e.state.name.lower()}. Returning to prompt.",
-                        file=sys.stderr,
-                    )
-                else:
-                    print("\nInterrupted.")
-                state.state_manager.reset()
-                # Rollback messages added during this turn (user message or
-                # assistant/tool messages).
-                while len(state.messages) > messages_before:
-                    state.messages.pop()
+                _rollback_interrupted_turn(state, e, user_msg, messages_before)
             except KeyboardInterrupt:
                 pass
+
         except Exception as e:
             print(f"Error: {e}", file=sys.stderr)
             state.state_manager.reset()
-            # Rollback messages added during this turn
-            while len(state.messages) > messages_before:
-                state.messages.pop()
+            # Keep the user message (and any system prompt prepended for this
+            # turn) together with all completed tool rounds; only drop a
+            # trailing tool call that never got its result.
+            if user_msg is not None:
+                _drop_incomplete_trailing_messages(state, user_msg)
+            else:
+                while len(state.messages) > messages_before:
+                    state.messages.pop()
 
 
 def _handle_command(line: str, state: ChatState) -> bool:
@@ -352,6 +468,12 @@ def _handle_command(line: str, state: ChatState) -> bool:
         total_chars = sum(len(m.get("content", "") or "") for m in state.messages)
         print(f"Messages: {len(state.messages)}, total characters: {total_chars}")
 
+    elif cmd == "/history":
+        _cmd_history(arg, state)
+
+    elif cmd == "/cut":
+        _cmd_cut(arg, state)
+
     else:
         print(f"Unknown command: {cmd}. Type /help for available commands.")
 
@@ -380,6 +502,8 @@ def _show_help():
     print("  /systemprompt <file>  Load a system prompt from a file")
     print("  /systemprompt unset   Unset the system prompt")
     print("  /context        Show conversation stats")
+    print("  /history [-t] [N] [-N] [a..b ...]   Show conversation history entries")
+    print("  /cut N | /cut a..b | /cut undo   Remove entries from the history")
     print("  /help           Show this help message")
     print("  /exit, /quit    Exit the chat")
     print()
@@ -410,6 +534,7 @@ def _cmd_feed(path: str, state: ChatState):
 
     content = raw_content.decode("utf-8", errors="replace")
     user_msg = {"role": "user", "content": content}
+    state.stamp_message(user_msg)
     messages_before = len(state.messages)
     state.messages.append(user_msg)
     state.log_ndjson(user_msg)
@@ -440,26 +565,225 @@ def _cmd_feed(path: str, state: ChatState):
             ndjson_log_file_handle=state.ndjson_log_file_handle,
             state_manager=state.state_manager,
         )
-    except KeyboardInterrupt:
-        while len(state.messages) > messages_before:
-            state.messages.pop()
-        raise
+    except KeyboardInterrupt as e:
+        try:
+            _rollback_interrupted_turn(state, e, user_msg, messages_before)
+        except KeyboardInterrupt:
+            pass
     except Exception as e:
         print(f"Error: {e}", file=sys.stderr)
-        while len(state.messages) > messages_before:
-            state.messages.pop()
+        state.state_manager.reset()
+        _drop_incomplete_trailing_messages(state, user_msg)
+
+
+def _toolcall_summary(msg):
+    """Human-readable summary of the tool calls in an assistant message.
+
+    Mirrors the ``[data from <name>: <args>]`` marker that tool results are
+    wrapped with, so the default /history shows which tool was invoked with
+    which arguments without dumping the full result data.
+    """
+    calls = msg.get("tool_calls") or []
+    parts = []
+    for tc in calls:
+        fn = tc.get("function", {}) if isinstance(tc, dict) else {}
+        name = fn.get("name", "?")
+        arguments = fn.get("arguments") or {}
+        if isinstance(arguments, dict):
+            args_str = ", ".join(f"{k}={v!r}" for k, v in arguments.items())
+        else:
+            args_str = str(arguments)
+        parts.append(f"[data from {name}: {args_str}]")
+    return ", ".join(parts)
+
+
+def _format_history_entry(entry):
+    import json
+    num = entry['num']
+    etype = entry['type'].upper()
+    msg = entry['msg']
+    role = msg.get('role')
+    content = msg.get('content', '')
+    ts = msg.get('timestamp')
+    prefix = f"[{num}] [{ts}] " if ts else f"[{num}] "
+
+    if role == 'user':
+        return f"{prefix}USER: {content}"
+    elif role == 'assistant':
+        if etype == 'THINKING':
+            if isinstance(content, dict) and 'thinking' in content:
+                thought = content['thinking']
+                return f"{prefix}ASSISTANT (THOUGHT): {thought}"
+            else:
+                return f"{prefix}ASSISTANT (THOUGHT): {content}"
+        elif etype == 'TOOLCALL':
+            summary = _toolcall_summary(msg)
+            if summary:
+                return f"{prefix}ASSISTANT (TOOLCALL) TOOL: {summary}"
+            return f"{prefix}ASSISTANT (TOOLCALL)"
+        else: # output
+            if isinstance(content, dict):
+                return f"{prefix}ASSISTANT: {json.dumps(content)}"
+            return f"{prefix}ASSISTANT: {content}"
+    elif role == 'tool':
+        return f"{prefix}TOOL: {content}"
+    else:
+        return f"{prefix}{etype}: {msg}"
+
+
+def _cmd_history(arg: str, state: ChatState):
+    entries = state.get_history_entries()
+    if not entries:
+        print("No history available.")
+        return
+
+    M = len(state.messages)
+    # -t includes tool responses; otherwise tool results are hidden
+    # (only output, thinking, toolcalls and user messages are shown).
+    include_tool_results = False
+    target_ranges = []  # List of (start_num, end_num) where numbers are 1..M
+
+    for token in arg.split():
+        if token == "-t":
+            include_tool_results = True
+        elif ".." in token:
+            try:
+                a, b = map(int, token.split(".."))
+                target_ranges.append((min(a, b), max(a, b)))
+            except ValueError:
+                pass
+        else:
+            try:
+                val = int(token)
+            except ValueError:
+                continue
+            if val < 0:
+                n = abs(val)
+                target_ranges.append((1, n))
+            else:
+                # "first N" means numbers M down to M-N+1
+                target_ranges.append(("first", val))
+
+    if include_tool_results:
+        visible = entries
+    else:
+        visible = [e for e in entries if e["type"] != "tool_result"]
+
+    if not target_ranges:
+        # /history -> show all (respecting the -t filter)
+        for e in visible:
+            print(_format_history_entry(e))
+        return
+
+    # Collect all numbers to show
+    numbers_to_show = set()
+    for r in target_ranges:
+        if isinstance(r[0], int):
+            start, end = r
+            for n in range(start, end + 1):
+                numbers_to_show.add(n)
+        elif r[0] == "first":
+            n = r[1]
+            # First N entries are numbers M, M-1, ..., M-N+1
+            for j in range(M - n + 1, M + 1):
+                numbers_to_show.add(j)
+
+    if not numbers_to_show:
+        print("No history matches the criteria.")
+        return
+
+    # Sort numbers descending (M down to 1)
+    sorted_nums = sorted(numbers_to_show, reverse=True)
+
+    found_any = False
+    for n in sorted_nums:
+        entry = next((e for e in visible if e["num"] == n), None)
+        if entry:
+            print(_format_history_entry(entry))
+            found_any = True
+
+    if not found_any:
+        print("No history matches the criteria.")
+
+
+def _cmd_cut(arg: str, state: ChatState):
+    """Remove entries from the conversation history (/cut N, /cut a..b, /cut undo).
+
+    History numbers count from M (oldest) down to 1 (newest), matching
+    /history. /cut N removes entries numbered 1..N; /cut a..b removes the
+    entries numbered a..b. System messages are never removed.
+    """
+    arg = arg.strip()
+    if not arg:
+        print("Usage: /cut N | /cut a..b | /cut undo")
+        return
+
+    if arg == "undo":
+        if state.undo_cut():
+            print("Cut undone.")
+        else:
+            print("Nothing to undo.")
+        return
+
+    M = len(state.messages)
+    if M == 0:
+        print("No history to cut.")
+        return
+
+    numbers = set()
+    for token in arg.split():
+        if ".." in token:
+            try:
+                a, b = map(int, token.split(".."))
+            except ValueError:
+                print(f"Invalid range: {token}")
+                return
+            lo, hi = min(a, b), max(a, b)
+            numbers.update(range(lo, hi + 1))
+        else:
+            try:
+                n = int(token)
+            except ValueError:
+                print(f"Invalid cut argument: {token}")
+                return
+            if n < 1:
+                print(f"Invalid cut argument: {token}")
+                return
+            # /cut N removes the last N entries (numbers 1..N).
+            numbers.update(range(1, n + 1))
+
+    # Map history numbers (1..M) back to message indices (index = M - num).
+    indices = sorted({M - n for n in numbers if 1 <= n <= M}, reverse=True)
+    # Never remove system messages (keeps the conversation in a valid state).
+    indices = [i for i in indices if state.messages[i].get("role") != "system"]
+
+    if not indices:
+        print("Nothing to cut.")
+        return
+
+    removed = [state.messages[i] for i in indices]
+    state._last_cut_messages = removed
+    state._last_cut_indices = indices
+
+    for i in indices:
+        del state.messages[i]
+
+    print(f"Cut {len(removed)} message(s).")
 
 
 def _cmd_save(path: str, state: ChatState):
+    """Save the conversation to a JSON file."""
     if not path:
         print("Usage: /save <path>")
         return
     data = {
-        "model": state.model,
         "messages": state.messages,
+        "model": state.model,
+        "loaded_tool_modules": state.loaded_tool_modules,
     }
-    if state.skill is not None or state.skill_text is not None:
+    if state.skill is not None:
         data["skill"] = state.skill
+    if state.skill_text is not None:
         data["skill_text"] = state.skill_text
     if state.system_prompt is not None:
         data["system_prompt"] = state.system_prompt
@@ -473,8 +797,8 @@ def _cmd_save(path: str, state: ChatState):
 
     try:
         with open(path, "w", encoding="utf-8") as f:
-            json.dump(data, f, indent=2, ensure_ascii=False)
-        print(f"Conversation saved to {path}")
+            json.dump(data, f, ensure_ascii=False, indent=2)
+        print(f"Saved conversation with {len(state.messages)} messages to {path}")
     except Exception as e:
         print(f"Error saving conversation: {e}")
 

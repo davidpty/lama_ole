@@ -133,7 +133,10 @@ def test_run_chat_interrupt_during_turn_rolls_back_and_continues(
     monkeypatch.setattr("builtins.input", fake_input)
     chat.run_chat(state)
 
-    assert state.messages == []
+    # Part 1: user message is kept on interrupt (partial rollback)
+    assert len(state.messages) == 2  # system prompt + user message
+    assert state.messages[0]["role"] == "system"
+    assert state.messages[1]["content"] == "hello"
     err = capsys.readouterr().err
     assert "outputting" in err
 
@@ -197,5 +200,228 @@ def test_main_initial_content_interrupt_falls_back_to_repl(monkeypatch, capsys):
     lama_ole_cli.main()
 
     assert calls["run_chat"] == 1
-    assert seen["state"].messages == []
+    # Part 1: user message is kept on interrupt (partial rollback)
+    assert len(seen["state"].messages) == 2  # system prompt + user message "hello"
+    assert seen["state"].messages[0]["role"] == "system"
+    assert seen["state"].messages[1]["content"] == "hello"
     assert "Entering chat mode" in capsys.readouterr().err
+
+
+def _toolcall_chunk(name, args):
+    return SimpleNamespace(
+        message=SimpleNamespace(
+            thinking=None,
+            content=None,
+            tool_calls=[
+                SimpleNamespace(function=SimpleNamespace(name=name, arguments=args))
+            ],
+        )
+    )
+
+
+class StreamSequenceClient:
+    """FakeClient that hands out one stream per chat() call."""
+
+    def __init__(self, streams):
+        self._streams = list(streams)
+
+    def chat(self, **kwargs):
+        return self._streams.pop(0)
+
+
+def test_run_chat_interrupt_keeps_completed_tool_rounds(monkeypatch, capsys):
+    streams = [
+        iter([_toolcall_chunk("read_file", {"path": "a.txt"})]),
+        iter([_toolcall_chunk("read_file", {"path": "b.txt"})]),
+        _interrupting_stream(),  # partial content, then KeyboardInterrupt
+    ]
+    state = chat.ChatState(
+        client=StreamSequenceClient(streams), model="test", color="never"
+    )
+    sequence = ["read files", KeyboardInterrupt(), EOFError()]
+
+    def fake_input(prompt):
+        item = sequence.pop(0)
+        if isinstance(item, Exception):
+            raise item
+        return item
+
+    monkeypatch.setattr("builtins.input", fake_input)
+    chat.run_chat(state)
+
+    # System prompt, user message and both completed tool rounds survive.
+    assert [m["role"] for m in state.messages] == [
+        "system",
+        "user",
+        "assistant",
+        "tool",
+        "assistant",
+        "tool",
+    ]
+    # The completed tool calls are visible in /history.
+    chat._cmd_history("", state)
+    out = capsys.readouterr().out
+    assert "ASSISTANT (TOOLCALL) TOOL: [data from read_file: path='a.txt']" in out
+    assert "ASSISTANT (TOOLCALL) TOOL: [data from read_file: path='b.txt']" in out
+
+
+def test_run_chat_interrupt_during_tool_execution_drops_dangling_toolcall(
+    monkeypatch,
+):
+    from tool_base.models import Tool
+
+    def boom(**kwargs):
+        raise KeyboardInterrupt()
+
+    def chunk():
+        return SimpleNamespace(
+            message=SimpleNamespace(
+                thinking=None,
+                content=None,
+                tool_calls=[
+                    SimpleNamespace(function=SimpleNamespace(name="boom", arguments={}))
+                ],
+            )
+        )
+
+    class FakeClient:
+        def __init__(self):
+            self._stream = iter([chunk()])
+
+        def chat(self, **kwargs):
+            return self._stream
+
+    state = chat.ChatState(
+        client=FakeClient(),
+        model="test",
+        color="never",
+        loaded_tools=[
+            Tool(name="boom", description="interrupts", parameters={}, fn=boom)
+        ],
+    )
+    sequence = ["go", KeyboardInterrupt(), EOFError()]
+
+    def fake_input(prompt):
+        item = sequence.pop(0)
+        if isinstance(item, Exception):
+            raise item
+        return item
+
+    monkeypatch.setattr("builtins.input", fake_input)
+    chat.run_chat(state)
+
+    # The assistant tool-call that announced the interrupted tool execution is
+    # dropped; the user message (and system prompt) stay.
+    assert [m["role"] for m in state.messages] == ["system", "user"]
+
+
+def test_run_chat_interrupt_during_multicall_round_drops_partial_results(
+    monkeypatch,
+):
+    from tool_base.models import Tool
+
+    def ok(**kwargs):
+        return {"status": "success", "data": "ok"}
+
+    def boom(**kwargs):
+        raise KeyboardInterrupt()
+
+    def chunk():
+        return SimpleNamespace(
+            message=SimpleNamespace(
+                thinking=None,
+                content=None,
+                tool_calls=[
+                    SimpleNamespace(function=SimpleNamespace(name="ok", arguments={})),
+                    SimpleNamespace(function=SimpleNamespace(name="boom", arguments={})),
+                ],
+            )
+        )
+
+    class FakeClient:
+        def __init__(self):
+            self._stream = iter([chunk()])
+
+        def chat(self, **kwargs):
+            return self._stream
+
+    state = chat.ChatState(
+        client=FakeClient(),
+        model="test",
+        color="never",
+        loaded_tools=[
+            Tool(name="ok", description="ok", parameters={}, fn=ok),
+            Tool(name="boom", description="boom", parameters={}, fn=boom),
+        ],
+    )
+    sequence = ["go", KeyboardInterrupt(), EOFError()]
+
+    def fake_input(prompt):
+        item = sequence.pop(0)
+        if isinstance(item, Exception):
+            raise item
+        return item
+
+    monkeypatch.setattr("builtins.input", fake_input)
+    chat.run_chat(state)
+
+    # The partial round (one result of two calls) is dropped entirely.
+    assert [m["role"] for m in state.messages] == ["system", "user"]
+
+
+def _drop_state(messages, user_msg):
+    state = chat.ChatState(client=None, model="m", messages=messages)
+    chat._drop_incomplete_trailing_messages(state, user_msg)
+    return [m["role"] for m in state.messages]
+
+
+def test_drop_incomplete_trailing_messages_keeps_complete_rounds():
+    msgs = [
+        {"role": "system", "content": "s"},
+        {"role": "user", "content": "u"},
+        {
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [{"function": {"name": "a", "arguments": {}}}],
+        },
+        {"role": "tool", "content": "r"},
+        {"role": "assistant", "content": "done"},
+    ]
+    # Interrupt during model response: the completed round survives.
+    assert _drop_state(msgs, msgs[1]) == [
+        "system",
+        "user",
+        "assistant",
+        "tool",
+        "assistant",
+    ]
+
+
+def test_drop_incomplete_trailing_messages_drops_dangling_toolcall():
+    msgs = [
+        {"role": "system", "content": "s"},
+        {"role": "user", "content": "u"},
+        {
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [{"function": {"name": "a", "arguments": {}}}],
+        },
+    ]
+    assert _drop_state(msgs, msgs[1]) == ["system", "user"]
+
+
+def test_drop_incomplete_trailing_messages_drops_partial_multicall_round():
+    msgs = [
+        {"role": "system", "content": "s"},
+        {"role": "user", "content": "u"},
+        {
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [
+                {"function": {"name": "a", "arguments": {}}},
+                {"function": {"name": "b", "arguments": {}}},
+            ],
+        },
+        {"role": "tool", "content": "r1"},
+    ]
+    assert _drop_state(msgs, msgs[1]) == ["system", "user"]

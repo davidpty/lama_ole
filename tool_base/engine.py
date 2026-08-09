@@ -13,6 +13,16 @@ from .constants import DANGEROUS_TOOLS
 from .utils import create_uuid_15
 
 
+def _stamp_message(msg) -> None:
+    """Attach the event time to a message dict (idempotent).
+
+    /history uses this timestamp to show when each entry happened. Existing
+    timestamps (e.g. from /load) are left untouched.
+    """
+    if isinstance(msg, dict) and "timestamp" not in msg:
+        msg["timestamp"] = time.strftime("%Y-%m-%d %H:%M:%S")
+
+
 def _entropy_check_tool_result(result, tool_name) -> None:
     """Defensive entropy check on a tool result dict (opt-in, see below).
 
@@ -129,6 +139,7 @@ def run_with_tools(
         )
 
         system_msg = {"role": "system", "content": sp}
+        _stamp_message(system_msg)
         messages.insert(0, system_msg)
         if ndjson_log_file_handle:
             from .logging import _log_ndjson_message
@@ -320,6 +331,7 @@ def run_with_tools(
                     for tc in response_tool_calls
                 ],
             }
+            _stamp_message(assistant_msg)
             messages.append(assistant_msg)
             if ndjson_log_file_handle:
                 from .logging import _log_ndjson_message
@@ -439,6 +451,7 @@ def run_with_tools(
                     "content": wrapped,
                     "tool_name": tool_name,
                 }
+                _stamp_message(tool_msg)
                 messages.append(tool_msg)
                 if ndjson_log_file_handle:
                     from .logging import _log_ndjson_message
@@ -458,6 +471,7 @@ def run_with_tools(
             tool_rounds += 1
         else:
             assistant_msg = {"role": "assistant", "content": response_content}
+            _stamp_message(assistant_msg)
             messages.append(assistant_msg)
             if ndjson_log_file_handle:
                 from .logging import _log_ndjson_message

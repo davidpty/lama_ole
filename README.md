@@ -23,6 +23,9 @@ lama_ole.py --host localhost -m gemma4:26b-a4b-it-qat --chat -t -v --tool tools.
   message) as its own NDJSON line (`--logndjson`).
 - **Flexible Input** — Direct string (`-i`), file (`-f`), or stdin (`--stdin`).
 - **Chat Mode** — Multi-turn REPL with slash commands (`--chat`).
+- **History Editing** — Inspect and surgically edit the conversation history
+  with `/history` and `/cut` (including undo); Ctrl-C only discards the
+  incomplete part of the interrupted turn.
 - **Tool Calling** — Load Python modules as callable tools (`--tool`).
 - **Tool Documentation** — Inspect loaded tools, their signatures, and
   environment variables (`--help-tools`).
@@ -288,11 +291,71 @@ In chat mode (`--chat`), lines starting with `/` are commands:
 | `/systemprompt <file>` | Load a system prompt from a file |
 | `/systemprompt unset` | Unset the system prompt (back to default) |
 | `/context` | Show message count and total character count |
+| `/history [<selector> ...]` | Show conversation history entries with numbers (see below) |
+| `/cut <N> \| <a..b> \| undo` | Remove entries from the conversation history (see below) |
 | `/help` | Show this help message |
 | `/exit`, `/quit` | Exit the chat |
 
 Bare `/tools` prints the tool subcommand usage. Bare `/skill` prints the skill
 subcommand usage. Bare `/systemprompt` prints the current system prompt.
+
+### History and cutting
+
+Every conversation message is numbered from **M** (oldest) down to **1**
+(newest), where M is the total number of messages — the same numbering used by
+`/history` and `/cut`. System messages are hidden from `/history` and are never
+removed by `/cut`.
+
+#### `/history`
+
+`/history` lists the conversation with its message numbers, in order from
+oldest to newest. By default it shows user messages, assistant output, thinking
+and tool calls; tool **responses** are shown only with `-t`.
+
+Every entry is prefixed with the time the event happened, e.g.
+`[7] [2026-08-09 09:01:00] USER: ...`. Tool calls show the concrete function
+name and arguments (`TOOL: [data from read_file: path='lama_ole/AGENTS.md']`),
+not just an empty `ASSISTANT (TOOLCALL)` marker; the full tool response data
+still requires `-t`.
+
+| Command | Shows |
+|---------|-------|
+| `/history` | all entries (output, thinking, tool calls) |
+| `/history -t` | all entries including tool responses |
+| `/history -10` | the last 10 entries |
+| `/history 10` | the first 10 entries |
+| `/history 10 -10` | the first 10 and the last 10 entries |
+| `/history a..b` | the entries numbered `a` to `b` |
+| `/history 5 c..d -6` | the first 5 entries, a range, and the last 6 entries |
+
+Ranges and numbers can be combined freely in one command.
+
+#### `/cut`
+
+`/cut` surgically removes entries from the conversation history. The removed
+messages are stored so they can be restored with `/cut undo`. System messages
+are never removed.
+
+| Command | Effect |
+|---------|--------|
+| `/cut N` | removes the last N entries (numbers `1..N`) |
+| `/cut a..b` | removes the entries numbered `a` to `b` |
+| `/cut undo` | restores the messages removed by the last `/cut` |
+
+Example: after a `/cut 3`, the three most recent entries are gone, and the
+conversation continues from the remaining history. `/cut undo` brings them
+back, and a later `/cut` replaces the undo buffer (only the most recent cut is
+undoable).
+
+#### Interruptions (Ctrl-C)
+
+When a turn is interrupted with Ctrl-C, only the incomplete part of that turn
+is removed from the history. Your last message — and the system prompt — are
+kept, and so are every **completed** tool round: a tool call that already
+returned its result stays visible in `/history`, so its context is preserved
+for the next turn. Only a tool call that was interrupted while still running
+(and its partial results) is dropped, along with whatever the model had started
+to generate when you pressed Ctrl-C.
 
 Tab completion is enabled in interactive mode: commands, `/tools`, `/skill` and
 `/systemprompt` subcommands, and file paths (for `/feed`, `/save`, `/load`,
