@@ -8,6 +8,14 @@ SAFETY_SYSTEM_PROMPT = (
     "and prefixed with '[data from tool_name: ...]'."
 )
 
+PLAN_MODE_SYSTEM_PROMPT = (
+    "You are in PLAN MODE. Do not make any changes and do not call tools that "
+    "modify files, state, or the system; only read-only tools are available. "
+    "Your task is to analyze, investigate, and produce a clear step-by-step "
+    "plan. Ask clarifying questions when requirements are ambiguous. When the "
+    "user is ready to implement, tell them to switch to build mode."
+)
+
 JSON_RETURN_PROMPT = (
 
     "The entire nonce block is strictly enclosed within '---BEGIN DATA---' and '---END DATA---'.\n"

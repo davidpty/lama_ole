@@ -116,6 +116,30 @@ def test_run_with_tools_uses_caller_state_manager():
     assert sm.current_state == ExecutionState.IDLE
 
 
+def test_thinking_stored_when_show_thinking():
+    chunks = [
+        _chunk(thinking="First part "),
+        _chunk(thinking="second part"),
+        _chunk(content="final answer"),
+    ]
+    client = FakeClient(stream=iter(chunks))
+    messages = [{"role": "user", "content": "hi"}]
+    run_with_tools(**_run_kwargs(client, messages, show_thinking=True))
+    assistant = [m for m in messages if m.get("role") == "assistant"][-1]
+    assert assistant["thinking"] == "First part second part"
+    sent = client.calls[0]["messages"]
+    assert all("thinking" not in m for m in sent)
+
+
+def test_thinking_not_stored_when_hidden():
+    chunks = [_chunk(thinking="secret"), _chunk(content="answer")]
+    client = FakeClient(stream=iter(chunks))
+    messages = [{"role": "user", "content": "hi"}]
+    run_with_tools(**_run_kwargs(client, messages, show_thinking=False))
+    assistant = [m for m in messages if m.get("role") == "assistant"][-1]
+    assert "thinking" not in assistant
+
+
 def test_run_chat_interrupt_during_turn_rolls_back_and_continues(
     monkeypatch, capsys
 ):
@@ -187,6 +211,7 @@ def test_main_initial_content_interrupt_falls_back_to_repl(monkeypatch, capsys):
         [
             "lama_ole.py",
             "--chat",
+            "--no-resume",
             "-m",
             "testmodel",
             "-i",

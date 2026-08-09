@@ -7,6 +7,7 @@ class Tool:
     description: str
     parameters: dict
     fn: Callable
+    readonly: bool = False
 
     def __call__(self, *args, **kwargs):
         return self.fn(*args, **kwargs)

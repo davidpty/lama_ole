@@ -7,6 +7,7 @@ import re
 import shutil
 import sys
 import tempfile
+import time
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -29,8 +30,20 @@ from tool_base import (
     set_vision_models,
     to_ollama_tools,
     run_with_tools,
+    sanitize_ctx_threshold,
+    DEFAULT_CTX_COMPACT_THRESHOLD,
 )
-from chat import ChatState, run_chat, _drop_incomplete_trailing_messages
+import color_util
+from chat import (
+    ChatState,
+    _drop_incomplete_trailing_messages,
+    _replay_history,
+    apply_session,
+    autosave_session,
+    find_recent_session,
+    new_session_id,
+    run_chat,
+)
 
 # ---------------------------------------------------------------------------
 # Configuration defaults (env vars + config files)
@@ -150,7 +163,7 @@ def build_parser():
     parser.add_argument(
         "-V", "--version",
         action="version",
-        version="0.0.47"
+        version="0.0.48"
     )
     # Define arguments
     parser.add_argument(
@@ -295,6 +308,34 @@ def build_parser():
         help="Start an interactive chat REPL session"
     )
 
+    # Parameter: resume
+    parser.add_argument(
+        "--resume",
+        action=argparse.BooleanOptionalAction,
+        default=_env_bool("LAMA_OLE_RESUME", True),
+        help="Automatically resume the most recent session for the current "
+             "directory on startup (use --no-resume to always start fresh)"
+    )
+
+    # Parameter: autosave
+    parser.add_argument(
+        "--autosave",
+        action=argparse.BooleanOptionalAction,
+        default=_env_bool("LAMA_OLE_AUTOSAVE", True),
+        help="Automatically save the current chat session to disk after every "
+             "turn and on exit (use --no-autosave to stop writing session files)"
+    )
+
+    # Parameter: show diff (default on)
+    parser.add_argument(
+        "--diff",
+        action=argparse.BooleanOptionalAction,
+        dest="show_diff",
+        default=_env_bool("LAMA_OLE_SHOW_DIFF", True),
+        help="Show a colored unified diff of each file write (edit/create/"
+             "append/apply_patch) in the output (use --no-diff to hide it)"
+    )
+
     # Parameter: color
     parser.add_argument(
         "--color",
@@ -304,12 +345,55 @@ def build_parser():
         help="Colorize user input, thinking, and LLM output: 'auto' (TTY only), 'always', or 'never'/'none' (default: auto)"
     )
 
+    # Parameter: context window meter
+    parser.add_argument(
+        "--ctx-meter",
+        action=argparse.BooleanOptionalAction,
+        default=_env_bool("LAMA_OLE_CTX_METER", True),
+        help="Show a context-window usage meter in chat mode (live prompt gauge). "
+             "The window size is taken from --num_ctx, LAMA_OLE_CTX_SIZE, or the running model"
+    )
+
+    # Parameter: context compaction
+    parser.add_argument(
+        "--auto-compact",
+        action=argparse.BooleanOptionalAction,
+        default=_env_bool("LAMA_OLE_AUTO_COMPACT", False),
+        help="Enable auto-compaction: when the context window crosses the "
+             "threshold, summarize older context (keeping recent turns verbatim)"
+    )
+    parser.add_argument(
+        "--auto-compact-threshold",
+        type=sanitize_ctx_threshold,
+        default=sanitize_ctx_threshold(
+            _env_float("LAMA_OLE_AUTO_COMPACT_THRESHOLD", DEFAULT_CTX_COMPACT_THRESHOLD)
+        ),
+        help="Fraction of the context window at which auto-compaction triggers "
+             "(must be in (0, 1])"
+    )
+    parser.add_argument(
+        "--auto-compact-model",
+        type=str,
+        default=_env_str("LAMA_OLE_AUTO_COMPACT_MODEL", None),
+        help="Model used to produce compaction summaries (default: the chat model)"
+    )
+
     # Parameter: safe
     parser.add_argument(
         "--safe",
         action=argparse.BooleanOptionalAction,
         default=_env_bool("LAMA_OLE_SAFE", False),
         help="Enable user confirmation before dangerous tool operations"
+    )
+
+    # Parameter: mode
+    parser.add_argument(
+        "--mode",
+        type=str,
+        default=_env_choice("LAMA_OLE_MODE", "build", ["build", "plan"]),
+        choices=["build", "plan"],
+        help="Chat agent mode: 'build' (full tools, changes allowed) or "
+             "'plan' (read-only tools, no changes)"
     )
 
     # Parameter: tool (repeatable)
@@ -498,10 +582,82 @@ def _resolve_env_defaults(args):
         args.vision_models = _env_list("LAMA_OLE_VISION_MODEL")
 
 
+def _default_sessions_dir():
+    """XDG-aware sessions directory (~/.local/share/lama_ole/sessions)."""
+    base = os.environ.get("LAMA_OLE_SESSION_DIR")
+    if not base:
+        xdg = os.environ.get("XDG_DATA_HOME")
+        if xdg:
+            base = os.path.join(xdg, "lama_ole")
+        else:
+            base = os.path.join(os.path.expanduser("~"), ".local", "share", "lama_ole")
+        base = os.path.join(base, "sessions")
+    return base
+
+
+def _prompt_model_choice(cli_model, session_model):
+    """Ask the user which model to keep when CLI and session disagree.
+
+    Returns one of "session", "cli", or "abort".
+    """
+    while True:
+        print(
+            f"The session uses model '{session_model}' but the CLI set "
+            f"'{cli_model}'.",
+            file=sys.stderr,
+        )
+        ans = input(
+            "Use the (s)ession model, the (c)li model, or (a)bort? [s/c/a]: "
+        ).strip().lower()
+        if ans in ("s", "session", ""):
+            return "session"
+        if ans in ("c", "cli"):
+            return "cli"
+        if ans in ("a", "abort"):
+            return "abort"
+        print("Please answer s, c or a.", file=sys.stderr)
+
+
+def _resume_session_into(state, resume):
+    """Restore the most recent session into ``state`` at startup.
+
+    If the CLI model differs from the session's model, ask the user which to
+    keep (the session model, the CLI model, or abort). ``args.model`` is not
+    updated for the resumed turns; the chosen model is applied to the state.
+    """
+    path, data = resume
+    session_model = data.get("model")
+    cli_model = state.model
+    if cli_model and session_model and cli_model != session_model:
+        choice = _prompt_model_choice(cli_model, session_model)
+        if choice == "abort":
+            sys.exit(0)
+        if choice == "cli":
+            data["model"] = cli_model
+    apply_session(state, data, source=path)
+    title = data.get("title") or "(untitled)"
+    n = len(state.messages)
+    print(
+        f"Resumed session '{title}' ({n} messages). Use --no-resume to start fresh.",
+        file=sys.stderr,
+    )
+    _replay_history(state, color_util.color_mode_enabled(state.color))
+
+
 def main():
     load_env_files()
     args = build_parser().parse_args()
     _resolve_env_defaults(args)
+
+    color_util.configure(
+        prompt=_env_str("LAMA_OLE_COLOR_PROMPT", None),
+        thinking=_env_str("LAMA_OLE_COLOR_THINKING", None),
+        output=_env_str("LAMA_OLE_COLOR_OUTPUT", None),
+        input=_env_str("LAMA_OLE_COLOR_INPUT", None),
+        meter_low=_env_str("LAMA_OLE_COLOR_METER_LOW", None),
+        meter_mid=_env_str("LAMA_OLE_COLOR_METER_MID", None),
+        meter_high=_env_str("LAMA_OLE_COLOR_METER_HIGH", None),
+    )
 
     host_url = args.host
     if not host_url.startswith(('http://', 'https://')) and ':' in host_url:
@@ -709,6 +865,7 @@ def main():
             options["num_gpu"] = args.num_gpu
 
         if args.chat:
+            sessions_dir = _default_sessions_dir()
             state = ChatState(
                 client=client,
                 model=args.model,
@@ -723,6 +880,8 @@ def main():
                 skill_text= skill_text,
                 verbose=args.verbose,
                 safe=args.safe,
+                mode=args.mode,
+                show_diff=args.show_diff,
                 thought_file_handle=thought_file_handle,
                 output_file_handle=output_file_handle,
                 toolcall_file_handle=toolcall_file_handle,
@@ -733,13 +892,28 @@ def main():
                 ndjson_log_path=args.logndjson,
                 ndjson_log_file_handle=ndjson_log_file_handle,
                 color=args.color,
+                sessions_dir=sessions_dir,
+                session_autosave=args.autosave,
+                ctx_meter=args.ctx_meter,
+                ctx_max=_env_int("LAMA_OLE_CTX_SIZE", None),
+                ctx_compact=args.auto_compact,
+                ctx_compact_threshold=args.auto_compact_threshold,
+                ctx_compact_model=args.auto_compact_model,
             )
+            if args.resume:
+                resume = find_recent_session(sessions_dir, os.getcwd())
+                if resume:
+                    _resume_session_into(state, resume)
+            if not state.session_id:
+                state.session_id = new_session_id()
+                state.session_created_at = time.time()
             if content.strip():
                 user_msg = {"role": "user", "content": content}
                 state.stamp_message(user_msg)
                 state.messages.append(user_msg)
                 state.log_ndjson(user_msg)
                 try:
+                    metrics = {}
                     run_with_tools(
                         client=client,
                         model=args.model,
@@ -754,6 +928,8 @@ def main():
                         skill_text= skill_text,
                         verbose=args.verbose,
                         safe=args.safe,
+                        mode=args.mode,
+                        show_diff=args.show_diff,
                         thought_file_handle=thought_file_handle,
                         output_file_handle=output_file_handle,
                         toolcall_file_handle=toolcall_file_handle,
@@ -764,7 +940,11 @@ def main():
                         ndjson_log_file_handle=ndjson_log_file_handle,
                         color=args.color,
                         state_manager=state.state_manager,
+                        metrics=metrics,
                     )
+                    state.ctx_usage = metrics
+                    state.ctx_usage_model = args.model
+                    autosave_session(state)
                 except KeyboardInterrupt:
                     print(
                         "\nInterrupted during initial response. Entering chat mode.",
@@ -797,6 +977,8 @@ def main():
                 skill_text= skill_text,
                 verbose=args.verbose,
                 safe=args.safe,
+                mode=args.mode,
+                show_diff=args.show_diff,
                 thought_file_handle=thought_file_handle,
                 output_file_handle=output_file_handle,
                 toolcall_file_handle=toolcall_file_handle,
@@ -824,6 +1006,11 @@ def main():
             chatinput_file_handle.close()
         if ndjson_log_file_handle:
             ndjson_log_file_handle.close()
+        if args.chat and args.autosave and "state" in locals():
+            try:
+                autosave_session(state)
+            except Exception as e:
+                print(f"Error saving session on exit: {e}", file=sys.stderr)
 
 # ---------------------------------------------------------------------------
 # Transfer implementation

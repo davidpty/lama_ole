@@ -6,11 +6,13 @@ from typing import Any, Optional, List
 
 from ollama import Tool as OllamaTool
 
-from color_util import C_OUTPUT, C_THINK, color_mode_enabled, colored
+import color_util
 
 from .models import Tool
 from .constants import DANGEROUS_TOOLS
 from .utils import create_uuid_15
+
+_MISSING = object()
 
 
 def _stamp_message(msg) -> None:
@@ -58,16 +60,57 @@ def _entropy_check_tool_result(result, tool_name) -> None:
             result["data"] = str(content)[:1000] + "... [TRUNCATED BY ENTROPY CHECK]"
 
 
+_MAX_DIFF_LINES = 200
+
+
+def _print_diff_block(file, diff, use_color) -> None:
+    """Print a colored unified diff block to stdout (mirrors opencode's edit card)."""
+    if not diff:
+        return
+    lines = diff.split("\n")
+    additions = 0
+    deletions = 0
+    for line in lines:
+        if line.startswith("+") and not line.startswith("+++"):
+            additions += 1
+        elif line.startswith("-") and not line.startswith("---"):
+            deletions += 1
+
+    if len(lines) > _MAX_DIFF_LINES + 2:
+        shown = lines[:_MAX_DIFF_LINES]
+        truncated = True
+    else:
+        shown = lines
+        truncated = False
+
+    header = f"[edit: {file}] +{additions} -{deletions}"
+    print(color_util.colored(header, color_util.C_PROMPT, use_color))
+    for line in shown:
+        if line.startswith("+++") or line.startswith("---") or line.startswith("@@"):
+            color = color_util.C_METER_MID
+        elif line.startswith("+"):
+            color = color_util.C_METER_LOW
+        elif line.startswith("-"):
+            color = color_util.C_METER_HIGH
+        else:
+            color = color_util.C_THINK
+        print(color_util.colored(line, color, use_color))
+    if truncated:
+        print(color_util.colored(f"... diff truncated ({len(lines) - _MAX_DIFF_LINES} lines omitted)", color_util.C_THINK, use_color))
+
+
 def compose_system_prompt(
     system_prompt: Optional[str] = None,
     skill_text: Optional[str] = None,
     no_safety_system_prompt: bool = False,
+    mode: Optional[str] = None,
 ) -> str:
     """Build the system message content from its ordered parts.
 
-    Order: base system prompt -> optional skill block -> safety prompts.
-    The skill block is delimited so it can be identified and stripped on
-    unload, and so it stays visually distinct from the base prompt.
+    Order: base system prompt -> optional skill block -> optional plan-mode
+    block -> safety prompts. The skill block is delimited so it can be
+    identified and stripped on unload, and so it stays visually distinct from
+    the base prompt.
     """
     sp = ""
     if system_prompt is not None:
@@ -77,6 +120,12 @@ def compose_system_prompt(
         sp += "[SKILL BEGIN]\n"
         sp += skill_text
         sp += "\n[SKILL END]\n"
+    if mode == "plan":
+        from .constants import PLAN_MODE_SYSTEM_PROMPT
+
+        sp += "[PLAN MODE BEGIN]\n"
+        sp += PLAN_MODE_SYSTEM_PROMPT
+        sp += "\n[PLAN MODE END]\n"
     if not no_safety_system_prompt:
         from .constants import SAFETY_SYSTEM_PROMPT, JSON_RETURN_PROMPT
 
@@ -97,6 +146,7 @@ def run_with_tools(
     no_safety_system_prompt: bool,
     system_prompt: Optional[str] = None,
     skill_text: Optional[str] = None,
+    mode: Optional[str] = None,
     verbose: int = 0,
     safe: bool = False,
     thought_file_handle=None,
@@ -109,16 +159,59 @@ def run_with_tools(
     ndjson_log_file_handle=None,
     color: str = "auto",
     state_manager=None,
+    metrics: Optional[dict] = None,
+    mode_state=None,
+    show_diff: bool = True,
 ):
     from .loop_states import ExecutionState, StateManager, ExecutionInterrupted
     from .logging import StateLogger
 
     if state_manager is None:
         state_manager = StateManager()
-    use_color = color_mode_enabled(color)
+    use_color = color_util.color_mode_enabled(color)
     tool_rounds = 0
     think_state = False
     final_response = ""
+    last_prompt_eval_count = None
+    last_eval_count = None
+    last_eval_duration_ns = None
+    last_prompt_eval_duration_ns = None
+    turn_rounds = []
+    turn_elapsed_started = None
+
+    def _current_mode() -> str:
+        """Effective mode right now (may change mid-turn via the hotkey)."""
+        if mode_state is not None:
+            current = getattr(mode_state, "mode", None)
+            if current is not None:
+                return current
+        return mode or "build"
+
+    def _refresh_tools_for_request():
+        """Adopt mode_state's advertised tool list after a mid-turn toggle."""
+        if mode_state is None:
+            return tools_for_request
+        new_tools = getattr(mode_state, "ollama_tools", _MISSING)
+        if new_tools is not _MISSING and new_tools is not tools_for_request:
+            return new_tools
+        return tools_for_request
+
+    tools_for_request = ollama_tools
+
+    from contextlib import contextmanager
+
+    @contextmanager
+    def _hotkey_suspended():
+        """Park the mid-turn hotkey listener around a blocking stdin prompt."""
+        pause = getattr(mode_state, "hotkey_pause", None)
+        resume = getattr(mode_state, "hotkey_resume", None)
+        if pause is not None:
+            pause()
+        try:
+            yield
+        finally:
+            if resume is not None:
+                resume()
 
     thought_logger = (
         StateLogger(handle=thought_file_handle) if thought_file_handle else None
@@ -136,6 +229,7 @@ def run_with_tools(
             system_prompt=system_prompt,
             skill_text=skill_text,
             no_safety_system_prompt=no_safety_system_prompt,
+            mode=mode,
         )
 
         system_msg = {"role": "system", "content": sp}
@@ -193,7 +287,8 @@ def run_with_tools(
                 print("  4. Quit", file=sys.stderr)
                 print("Enter choice (1-4): ", file=sys.stderr, end='', flush=True)
                 try:
-                    choice = sys.stdin.readline().strip()
+                    with _hotkey_suspended():
+                        choice = sys.stdin.readline().strip()
                 except EOFError:
                     choice = "3"
                 except KeyboardInterrupt:
@@ -206,7 +301,8 @@ def run_with_tools(
                         file=sys.stderr, end='', flush=True,
                     )
                     try:
-                        new_val = sys.stdin.readline().strip()
+                        with _hotkey_suspended():
+                            new_val = sys.stdin.readline().strip()
                         max_tool_rounds = int(new_val)
                         print(
                             f"New limit set to {max_tool_rounds}.",
@@ -244,12 +340,22 @@ def run_with_tools(
 
         response_content = ""
         response_tool_calls = None
+        think_text = ""
+        round_prompt_eval_count = None
+        round_eval_count = None
+        round_eval_duration_ns = None
+        round_prompt_eval_duration_ns = None
+        round_started = time.monotonic()
+        if turn_elapsed_started is None:
+            turn_elapsed_started = round_started
+
+        tools_for_request = _refresh_tools_for_request()
 
         try:
             stream = client.chat(
                 model=model,
-                messages=messages,
-                tools=ollama_tools,
+                messages=[{k: v for k, v in m.items() if k != "thinking"} for m in messages],
+                tools=tools_for_request,
                 stream=True,
                 options=options,
                 keep_alive=keep_alive,
@@ -258,11 +364,21 @@ def run_with_tools(
                 for chunk in stream:
                     msg = chunk.message
 
+                    if getattr(chunk, "prompt_eval_count", None) is not None:
+                        last_prompt_eval_count = chunk.prompt_eval_count
+                    if getattr(chunk, "eval_count", None) is not None:
+                        last_eval_count = chunk.eval_count
+                    if getattr(chunk, "eval_duration", None) is not None:
+                        last_eval_duration_ns = chunk.eval_duration
+                    if getattr(chunk, "prompt_eval_duration", None) is not None:
+                        last_prompt_eval_duration_ns = chunk.prompt_eval_duration
+
                     if verbose >= 3:
                         from .logging import _log_chunk
                         _log_chunk(msg, file=sys.stderr)
 
                     if msg.thinking:
+                        think_text += msg.thinking
                         if not think_state:
                             think_state = True
                             state_manager.transition_to(ExecutionState.THINKING)
@@ -270,9 +386,9 @@ def run_with_tools(
                                 thought_logger.new_slice()
                             if show_thinking:
                                 ts = time.strftime("%Y-%m-%d %H:%M:%S")
-                                print(colored(f"[{ts}] Thinking starts", C_THINK, use_color))
+                                print(color_util.colored(f"[{ts}] Thinking starts", color_util.C_THINK, use_color))
                         if show_thinking:
-                            print(colored(msg.thinking, C_THINK, use_color), end='', flush=True)
+                            print(color_util.colored(msg.thinking, color_util.C_THINK, use_color), end='', flush=True)
                         if thought_logger:
                             thought_logger.write_thought(msg.thinking)
 
@@ -285,12 +401,12 @@ def run_with_tools(
                             if show_thinking:
                                 ts = time.strftime("%Y-%m-%d %H:%M:%S")
                                 print()
-                                print(colored(f"[{ts}] Thinking ends", C_THINK, use_color))
+                                print(color_util.colored(f"[{ts}] Thinking ends", color_util.C_THINK, use_color))
                                 print()
                         elif state_manager.current_state != ExecutionState.OUTPUTTING:
                             state_manager.transition_to(ExecutionState.OUTPUTTING)
                         response_content += msg.content
-                        print(colored(msg.content, C_OUTPUT, use_color), end='', flush=True)
+                        print(color_util.colored(msg.content, color_util.C_OUTPUT, use_color), end='', flush=True)
                         if output_logger:
                             output_logger.write_output(msg.content)
 
@@ -312,10 +428,29 @@ def run_with_tools(
             if show_thinking:
                 ts = time.strftime("%Y-%m-%d %H:%M:%S")
                 print()
-                print(colored(f"[{ts}] Thinking ends", C_THINK, use_color))
+                print(color_util.colored(f"[{ts}] Thinking ends", color_util.C_THINK, use_color))
                 print()
 
         print()
+
+        if metrics is not None:
+            metrics["prompt_eval_count"] = last_prompt_eval_count
+            metrics["eval_count"] = last_eval_count
+            metrics["eval_duration_ns"] = last_eval_duration_ns
+            metrics["prompt_eval_duration_ns"] = last_prompt_eval_duration_ns
+            metrics["last_round_kind"] = "tool call" if response_tool_calls else "final answer"
+            metrics["rounds_model"] = model
+
+        if metrics is not None:
+            turn_rounds.append(
+                {
+                    "kind": "tool call" if response_tool_calls else "final answer",
+                    "eval_count": last_eval_count,
+                    "eval_duration_ns": last_eval_duration_ns,
+                    "prompt_eval_count": last_prompt_eval_count,
+                    "prompt_eval_duration_ns": last_prompt_eval_duration_ns,
+                }
+            )
 
         if response_tool_calls:
             assistant_msg = {
@@ -331,6 +466,8 @@ def run_with_tools(
                     for tc in response_tool_calls
                 ],
             }
+            if show_thinking and think_text.strip():
+                assistant_msg["thinking"] = think_text
             _stamp_message(assistant_msg)
             messages.append(assistant_msg)
             if ndjson_log_file_handle:
@@ -365,35 +502,44 @@ def run_with_tools(
 
                 try:
                     if tool_obj:
-                        should_run = True
-                        if safe and tool_name in DANGEROUS_TOOLS:
-                            print(
-                                f"\n[DANGER] Tool '{tool_name}' called with: {args_str}",
-                                file=sys.stderr,
-                            )
-                            print(
-                                "Proceed? (y/N): ",
-                                file=sys.stderr, end='', flush=True,
-                            )
-                            try:
-                                answer = sys.stdin.readline().strip().lower()
-                            except EOFError:
-                                answer = 'n'
-                            except KeyboardInterrupt:
-                                answer = 'n'
-                            should_run = answer == 'y'
-
-                        if should_run:
-                            try:
-                                raw_result = tool_obj.fn(**arguments)
-                                if isinstance(raw_result, dict):
-                                    result = raw_result
-                                else:
-                                    result = {"status": "success", "data": raw_result}
-                            except Exception as e:
-                                result = {"status": "error", "message": str(e)}
+                        if _current_mode() == "plan" and not tool_obj.readonly:
+                            # Mid-turn safety net: a write tool proposed before
+                            # the user toggled to plan mode must not run.
+                            result = {
+                                "status": "error",
+                                "message": f"Execution of '{tool_name}' blocked in plan mode (write tool).",
+                            }
                         else:
-                            result = {"status": "error", "message": f"Execution of '{tool_name}' cancelled by user (safe mode)."}
+                            should_run = True
+                            if safe and tool_name in DANGEROUS_TOOLS:
+                                print(
+                                    f"\n[DANGER] Tool '{tool_name}' called with: {args_str}",
+                                    file=sys.stderr,
+                                )
+                                print(
+                                    "Proceed? (y/N): ",
+                                    file=sys.stderr, end='', flush=True,
+                                )
+                                try:
+                                    with _hotkey_suspended():
+                                        answer = sys.stdin.readline().strip().lower()
+                                except EOFError:
+                                    answer = 'n'
+                                except KeyboardInterrupt:
+                                    answer = 'n'
+                                should_run = answer == 'y'
+
+                            if should_run:
+                                try:
+                                    raw_result = tool_obj.fn(**arguments)
+                                    if isinstance(raw_result, dict):
+                                        result = raw_result
+                                    else:
+                                        result = {"status": "success", "data": raw_result}
+                                except Exception as e:
+                                    result = {"status": "error", "message": str(e)}
+                            else:
+                                result = {"status": "error", "message": f"Execution of '{tool_name}' cancelled by user (safe mode)."}
                     else:
                         result = {"status": "error", "message": f"unknown tool '{tool_name}'"}
                 except KeyboardInterrupt:
@@ -415,6 +561,13 @@ def run_with_tools(
                         f"[tool result: {display}]",
                         file=sys.stderr,
                         flush=True,
+                    )
+
+                if show_diff and isinstance(result, dict):
+                    _print_diff_block(
+                        result.get("file") or tool_name,
+                        result.get("diff") or "",
+                        use_color,
                     )
 
                 # --- NEW NONCE LOGIC START ---
@@ -450,6 +603,8 @@ def run_with_tools(
                     "role": "tool",
                     "content": wrapped,
                     "tool_name": tool_name,
+                    "diff": result.get("diff") if isinstance(result, dict) else None,
+                    "file": result.get("file") if isinstance(result, dict) else None,
                 }
                 _stamp_message(tool_msg)
                 messages.append(tool_msg)
@@ -471,6 +626,8 @@ def run_with_tools(
             tool_rounds += 1
         else:
             assistant_msg = {"role": "assistant", "content": response_content}
+            if show_thinking and think_text.strip():
+                assistant_msg["thinking"] = think_text
             _stamp_message(assistant_msg)
             messages.append(assistant_msg)
             if ndjson_log_file_handle:
@@ -479,6 +636,16 @@ def run_with_tools(
             final_response = response_content
             state_manager.transition_to(ExecutionState.IDLE)
             break
+
+    if metrics is not None:
+        metrics["rounds"] = list(turn_rounds)
+        metrics["turn_rounds"] = len(turn_rounds)
+        metrics["turn_eval_count"] = sum(r.get("eval_count") or 0 for r in turn_rounds)
+        metrics["turn_eval_duration_ns"] = sum(r.get("eval_duration_ns") or 0 for r in turn_rounds)
+        metrics["turn_prompt_eval_count"] = sum(r.get("prompt_eval_count") or 0 for r in turn_rounds)
+        metrics["turn_prompt_eval_duration_ns"] = sum(r.get("prompt_eval_duration_ns") or 0 for r in turn_rounds)
+        if turn_elapsed_started is not None:
+            metrics["turn_elapsed_s"] = time.monotonic() - turn_elapsed_started
 
     return final_response
 

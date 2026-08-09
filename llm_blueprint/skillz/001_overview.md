@@ -173,7 +173,7 @@ class ChatState:
 | Skill loaded before the first turn | `apply_skill()` inserts the composed system message itself; `run_with_tools()` then sees `has_system=True` and skips its own insertion. |
 | Skill file missing / unreadable | Print an error; leave the active skill unchanged (no partial state). |
 | Non-UTF-8 / binary skill file | Rejected: `EntropyChecker` (as `/feed` uses) is enforced on load, so binary/random files fail with a clear error. |
-| `/clear` with active skill | Messages are cleared, but the skill stays loaded; the next turn rebuilds the system message with the skill still active. |
+| `/new` with active skill | Messages are cleared, but the skill stays loaded; the next turn rebuilds the system message with the skill still active. |
 | Loading a second skill | Replaces the active one (single slot). |
 | `/save` / `/load` conversations | Optionally persist `skill`/`skill_text` in the JSON; the baked system message is already saved, so loading restores identical behavior. |
 | `--no_safety_system_prompt` | Composer simply omits the safety block; skill text is unaffected. |

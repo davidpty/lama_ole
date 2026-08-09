@@ -51,6 +51,13 @@ class TestSubcommandCompletion:
     def test_systemprompt_subcommand(self):
         assert chat._completion_candidates("/systemprompt u") == ["unset"]
 
+    def test_compact_subcommand(self):
+        assert chat._completion_candidates("/compact a") == ["auto"]
+
+    def test_compact_all_from_trailing_space(self):
+        matches = chat._completion_candidates("/compact ")
+        assert set(matches) == set(chat._COMMAND_SUBCOMMANDS["/compact"])
+
 
 class TestFilePathCompletion:
     def test_feed_completes_file(self, tmp_path, monkeypatch):
@@ -96,3 +103,8 @@ class TestFilePathCompletion:
     def test_no_matches_for_nonexistent(self, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
         assert chat._completion_candidates("/feed nofile") == []
+
+
+class TestBracketedPaste:
+    def test_install_runs_without_error(self):
+        chat._install_bracketed_paste()

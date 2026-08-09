@@ -23,6 +23,8 @@ lama_ole.py --host localhost -m gemma4:26b-a4b-it-qat --chat -t -v --tool tools.
   message) as its own NDJSON line (`--logndjson`).
 - **Flexible Input** — Direct string (`-i`), file (`-f`), or stdin (`--stdin`).
 - **Chat Mode** — Multi-turn REPL with slash commands (`--chat`).
+- **Plan / Build Modes** — Switch between an opencode-style read-only *plan*
+  mode and the full *build* mode with **Shift+Tab**, `/plan`, or `/build`.
 - **History Editing** — Inspect and surgically edit the conversation history
   with `/history` and `/cut` (including undo); Ctrl-C only discards the
   incomplete part of the interrupted turn.
@@ -104,6 +106,28 @@ python3 lama_ole.py -m llama3.2:3b -i "What's the weather in Paris?" \
 
 ```bash
 python3 lama_ole.py --chat -m llama3.2:3b --tool tools.example_tools
+```
+
+### Seeing What Was Edited
+
+Every file write made by a tool (edit, create_new_file, append_to_file,
+apply_patch) prints a colored unified diff in the output, so you can see
+exactly what changed:
+
+```bash
+[edit: src/foo.py] +3 -1
+--- src/foo.py
++++ src/foo.py
+@@ -12,3 +12,5 @@
+ old line
++new line
+```
+
+Diff display is on by default. Disable it with `--no-diff`, or configure it
+via the env file (`~/.config/lama_ole/lama_ole.env` or `./lama_ole.env`):
+
+```ini
+LAMA_OLE_SHOW_DIFF=false
 ```
 
 ### Inspecting Tools
@@ -273,10 +297,18 @@ In chat mode (`--chat`), lines starting with `/` are commands:
 | Command | Description |
 |---------|-------------|
 | `/feed <path>` | Read a file and send its content as a message |
-| `/clear` | Clear the conversation history |
+| `/new` | Start a new session (the previous session is preserved and can be restored with `/resume`) |
+| `/compact [auto on\|off]` | Compact the context now (summarize older turns, keep recent verbatim), or toggle/show auto-compaction |
 | `/model <name>` | Switch to a different model |
+| `/plan` | Switch to plan mode (read-only tools only, no changes) |
+| `/build` | Switch to build mode (full tools, changes allowed) |
 | `/save <path>` | Save the conversation to a JSON file (model, messages, active skill, system prompt and loaded toolsets) |
 | `/load <path>` | Load a conversation from a JSON file (restores the active skill, system prompt and re-loads toolsets) |
+| `/resume [match]` | Resume a saved session; without an argument it lists sessions and prompts, with a session-id or title substring it loads directly |
+| `/sessions` | List all saved sessions |
+| `/stats` | Show the current model, the last turn's per-round breakdown (time, tokens, tok/s), and session averages per model |
+| `/rename <new title>` | Rename the current session (persists across autosaves) |
+| `/rename <id-prefix> <new title>` | Rename a stored session by session-id prefix |
 | `/tools loaded` | List loaded toolsets and their tools |
 | `/tools available` | List toolsets available to load |
 | `/tools show <toolset>` | List all tools of one toolset |
@@ -290,7 +322,7 @@ In chat mode (`--chat`), lines starting with `/` are commands:
 | `/systemprompt [show]` | Show the current system prompt |
 | `/systemprompt <file>` | Load a system prompt from a file |
 | `/systemprompt unset` | Unset the system prompt (back to default) |
-| `/context` | Show message count and total character count |
+| `/context` | Show context usage (tokens/window/percentage + breakdown), or `/context on` / `/context off` to toggle the meter |
 | `/history [<selector> ...]` | Show conversation history entries with numbers (see below) |
 | `/cut <N> \| <a..b> \| undo` | Remove entries from the conversation history (see below) |
 | `/help` | Show this help message |
@@ -298,6 +330,142 @@ In chat mode (`--chat`), lines starting with `/` are commands:
 
 Bare `/tools` prints the tool subcommand usage. Bare `/skill` prints the skill
 subcommand usage. Bare `/systemprompt` prints the current system prompt.
+
+### Context-window meter
+
+In chat mode a context-window usage meter is shown by default:
+
+* The prompt shows a live gauge, e.g. `[ctx 12,345/32,768 ████░░░░░░ 37%] `,
+  which is green below 70% usage, yellow from 70%, and red from 90%. It
+  updates after every turn.
+* `/context` prints the exact usage plus a per-category breakdown
+  (system/user/assistant/tool), estimated and scaled to match the real token
+  count; `/context off` and `/context on` toggle the meter.
+* Before each turn a warning is printed when the typed message is predicted
+  to overflow the window.
+* The last-known usage is saved with the session and restored on `/resume` /
+  `/load`, so the gauge is meaningful right away. The count is exact when the
+  session's model is unchanged; after a model change (or a mid-session
+  `/model`) it is shown as an estimate with a tilde, e.g.
+  `[ctx ~12,345/32,768 ████░░░░░░ ~37%] `. The window size (`num_ctx`) does
+  not affect the count — only the percentage, which recomputes against the
+  current window.
+
+The window size is resolved in order: `--num_ctx`, `LAMA_OLE_CTX_SIZE`, the
+running model's allocated context (`ollama ps`), the model's `num_ctx`
+parameter, the model's declared context length, otherwise unknown (token
+counts are shown without a percentage).
+
+### Context compaction
+
+When the conversation grows too large for the context window, `/compact`
+summarizes the older turns into a single structured summary while keeping the
+most recent turns verbatim (mirroring how opencode compacts its sessions):
+
+* Older turns are serialized into labeled text (`[User]:`, `[Assistant]:`,
+  `[Assistant tool call]:`, `[Tool result]:`, ...), tool results are truncated
+  to 2000 characters, and the head is handed to the summarizer model.
+* The summarizer streams an **anchored** Markdown summary (Objective, Important
+  Details, Work State, Next Move, Relevant Files). If the conversation was
+  already compacted, the previous summary is passed as `<previous-summary>` and
+  updated instead of being nested.
+* The summarized head is replaced by a `compacted` user message and the recent
+  tail (last 2 turns, bounded by a token budget) stays verbatim. The meter
+  resets so usage is recomputed from the next request.
+* Summaries use the model from `--auto-compact-model`, or the chat model by
+  default. Confirmation is always requested before tokens are spent.
+
+Auto-compaction triggers after a turn when the context usage crosses the
+threshold and asks for confirmation:
+
+| Option / env var | Default | Description |
+|------------------|---------|-------------|
+| `--auto-compact` / `LAMA_OLE_AUTO_COMPACT` | off | Enable auto-compaction on threshold crossing |
+| `--auto-compact-threshold` / `LAMA_OLE_AUTO_COMPACT_THRESHOLD` | `0.75` | Fraction of the window (in `(0, 1]`) that triggers compaction |
+| `--auto-compact-model` / `LAMA_OLE_AUTO_COMPACT_MODEL` | chat model | Model used to produce summaries |
+
+In chat mode `/compact auto on` / `/compact auto off` toggle auto-compaction
+at runtime and `/compact auto` shows the current setting.
+
+Compaction configuration is saved with the session and restored on `/resume`.
+
+Tab completion is enabled in interactive mode: commands, `/tools`, `/skill`,
+`/compact` and `/systemprompt` subcommands, and file paths (for `/feed`,
+`/save`, `/load`, `/skill load` and `/systemprompt`) are completed with Tab.
+Completion needs the `readline` module and is skipped automatically when stdin
+is not a terminal.
+
+### Plan / build modes
+
+The chat agent runs in one of two opencode-style modes:
+
+* **Build** (default) — full access to every loaded tool; changes are allowed.
+* **Plan** — read-only: the model is told to analyze and plan without making
+  changes, and only tools from modules marked read-only (`__tool_readonly__ =
+  True`, e.g. `tools.dev_tools_readonly`, `tools.web_tools`,
+  `tools.media_understanding_tools`) are advertised. Mutating toolsets remain
+  loaded but are hidden from the model until you switch back.
+
+Switch modes with **Shift+Tab** (a single keystroke that toggles between `/plan`
+and `/build`), or type `/plan` / `/build`. The prompt always shows the current
+mode: a green `[build] ` or a yellow `[plan] `. The mode is remembered in saved
+sessions, so resuming a plan session stays in plan mode. Start in a given mode
+with `--mode plan` (`LAMA_OLE_MODE=plan`). To make your own tool module
+plan-safe, add a module-level `__tool_readonly__ = True`.
+
+**Shift+Tab also works mid-turn** — while the model is streaming or a tool is
+running, it switches mode without interrupting the current response. The switch
+takes effect immediately for tool execution: any write tool that arrives after
+the switch is blocked (the error is fed back to the model) and the next
+tool-calling round advertises only read-only tools. Printable keys typed
+mid-turn are captured and replayed into the next prompt's line buffer; Enter
+and arrow keys are ignored while the model is working.
+
+## Sessions
+
+Chat sessions are saved automatically. Each chat run is recorded after every
+turn and on exit, so you can leave and resume later without manual `/save`
+and `/load`.
+
+* **Storage**: `~/.local/share/lama_ole/sessions/` (respects `XDG_DATA_HOME`,
+  or override with `LAMA_OLE_SESSION_DIR`). One directory per project (the
+  working directory encoded into a slug plus a short hash of the real path:
+  `/home/me/proj` → `home-me-proj-<hash>`; the hash guarantees similar names
+  like `lama_ole` vs `lama-ole` never collide), each session its own
+  `<session-id>.json` file with 0600 permissions. The real directory path is
+  stored inside the file.
+* **Auto-resume**: starting `--chat` restores the most recent session for the
+  current directory and prints a notice. The restored conversation is then
+  replayed (user prompts and assistant replies, in their original colors) so
+  it reads like you never left; thinking captured with `-t` is replayed only
+  when `-t` is on, and tool call/result markers only in verbose mode — both
+  matching their live visibility. If the session model differs
+  from the CLI `-m`, you are asked which to keep (session / CLI / abort).
+  `/resume` and `/load` replay the history the same way.
+* **Opt out**: the two behaviors are independent toggles, both on by default:
+  * `--no-resume` (or `LAMA_OLE_RESUME=false`) disables auto-loading.
+  * `--no-autosave` (or `LAMA_OLE_AUTOSAVE=false`) disables writing session
+    files.
+  `/resume` and `/sessions` still work for manual recovery either way.
+* **Renames/moves**: if a project directory is renamed, its sessions no
+  longer match the new path automatically. Run `/resume` — sessions recorded
+  elsewhere are listed (marked `[moved]`) and resuming one re-associates it
+  to the current directory.
+* **`/new`**: archives the current session (leaving it restorable) and
+  starts a fresh one.
+* **`/stats`**: shows the current model, the last turn's per-round breakdown
+  (time, in/out tokens, tok/s), and session averages broken down per model.
+  Averages and the last-turn breakdown are saved with the session (autosave,
+  `/save`, `/load`, `/resume`) and restored on resume.
+* **Titles**: sessions are titled from the first user message by default.
+  `/rename <new title>` overrides it for the current session (persisted across
+  autosaves), and `/rename <id-prefix> <new title>` renames any stored session
+  by its session-id prefix. A renamed title is kept as-is; unrenamed sessions
+  keep deriving from their first message.
+* **`/save <path>` / `/load <path>`**: explicit portable snapshots for
+  sharing or backup; they remain independent of the automatic sessions.
+  `/load` first archives the current conversation to its auto-save slot, so a
+  resumed session is never silently overwritten.
 
 ### History and cutting
 
@@ -357,11 +525,6 @@ for the next turn. Only a tool call that was interrupted while still running
 (and its partial results) is dropped, along with whatever the model had started
 to generate when you pressed Ctrl-C.
 
-Tab completion is enabled in interactive mode: commands, `/tools`, `/skill` and
-`/systemprompt` subcommands, and file paths (for `/feed`, `/save`, `/load`,
-`/skill load` and `/systemprompt`) are completed with Tab. Completion needs the
-`readline` module and is skipped automatically when stdin is not a terminal.
-
 ## Configuration Options
 
 | Flag | Description | Default |
@@ -384,11 +547,14 @@ Tab completion is enabled in interactive mode: commands, `/tools`, `/skill` and
 | `--num_gpu INT` | GPU layers to use | (Ollama default) |
 | `--keep_alive DURATION` | Keep model in memory (`5m`, `1h`) | (Ollama default) |
 | `--chat` | Start interactive chat REPL | |
+| `--resume` / `--no-resume` | Auto-resume the most recent session for the current directory on startup | `--resume` |
+| `--autosave` / `--no-autosave` | Auto-save the chat session after every turn and on exit | `--autosave` |
 | `--tool MODULE` | Load tool module (repeatable) | |
 | `--skill PATH` | Load skill text into system role (repeatable; files concatenated) | |
 | `--vision_model MODEL` | Vision model for media tools (repeatable) | (auto-detect) |
 | `--help-tools` | Show loaded tool documentation and exit | |
 | `--safe` | Confirm before dangerous tool operations | |
+| `--mode MODE` | Chat agent mode: `build` or `plan` | `build` |
 | `--max_tool_rounds N` | Max tool-calling rounds | (no limit) |
 | `--max_tool_rounds_continuation` | Behavior at limit: `ask` or `fallback` | `ask` |
 | `-l, --list` | List all available models | |
@@ -404,6 +570,10 @@ Tab completion is enabled in interactive mode: commands, `/tools`, `/skill` and
 | `--no_safety_system_prompt` | Disable safety system prompt; enables potential takeover when tools are used (placed after any user-provided system prompt) | |
 | `--debug` | Initialize the environment and enter an interactive Python REPL for debugging | |
 | `--color MODE` | Colorize user input, thinking, and LLM output: `auto` (TTY only), `always`, `never`/`none` | `auto` |
+| `--ctx-meter` / `--no-ctx-meter` | Show the context-window usage meter in chat mode | on |
+| `--auto-compact` / `--no-auto-compact` | Enable auto-compaction on threshold crossing | off |
+| `--auto-compact-threshold FLOAT` | Fraction of the window (in `(0, 1]`) that triggers auto-compaction | `0.75` |
+| `--auto-compact-model MODEL` | Model used to produce compaction summaries | chat model |
 | `-v` to `-vvv` | Verbosity level (repeat for more) | silent |
 
 ### Verbosity Levels
@@ -527,15 +697,42 @@ the configured default.
 | `LAMA_OLE_CHAT` | boolean | `--chat` / `--no-chat` |
 | `LAMA_OLE_THINKING` | boolean | `-t, --thinking` / `--no-thinking` |
 | `LAMA_OLE_SAFE` | boolean | `--safe` / `--no-safe` |
+| `LAMA_OLE_MODE` | string | `--mode` (`build` or `plan`) |
 | `LAMA_OLE_OLLAMA_WEBSRCH` | boolean | `--ollama_websearch` / `--no-ollama_websearch` |
 | `LAMA_OLE_VERBOSE` | integer | `-v, --verbose` (CLI `-v` adds to it) |
 | `LAMA_OLE_COLOR` | string | `--color` (`auto`, `always`, `never` or `none`) |
+| `LAMA_OLE_CTX_METER` | boolean | `--ctx-meter` / `--no-ctx-meter` |
+| `LAMA_OLE_CTX_SIZE` | integer | (config-only, no flag) — force the meter's context window |
+| `LAMA_OLE_AUTO_COMPACT` | boolean | `--auto-compact` / `--no-auto-compact` |
+| `LAMA_OLE_AUTO_COMPACT_THRESHOLD` | number | `--auto-compact-threshold` (must be in `(0, 1]`) |
+| `LAMA_OLE_AUTO_COMPACT_MODEL` | string | `--auto-compact-model` |
 | `LAMA_OLE_TOOL` | space/comma-separated list | `--tool` (CLI appends, deduped) |
 | `LAMA_OLE_VISION_MODEL` | space/comma-separated list | `--vision_model` (CLI replaces) |
 | `LAMA_OLE_MAX_TOOL_ROUNDS` | integer | `--max_tool_rounds` |
 | `LAMA_OLE_MAX_TOOL_ROUNDS_CONTINUATION` | string | `--max_tool_rounds_continuation` |
 | `LAMA_OLE_SYSTEM_PROMPT` | string | `--system_prompt` |
 | `LAMA_OLE_SYSTEM_PROMPT_FILE` | string | `--system_prompt_file` |
+ | `LAMA_OLE_COLOR_PROMPT` | color spec | (config-only, no flag) |
+ | `LAMA_OLE_COLOR_THINKING` | color spec | (config-only, no flag) |
+ | `LAMA_OLE_COLOR_OUTPUT` | color spec | (config-only, no flag) |
+ | `LAMA_OLE_COLOR_INPUT` | color spec | (config-only, no flag) |
+ | `LAMA_OLE_COLOR_METER_LOW` | color spec | (config-only, no flag) |
+ | `LAMA_OLE_COLOR_METER_MID` | color spec | (config-only, no flag) |
+ | `LAMA_OLE_COLOR_METER_HIGH` | color spec | (config-only, no flag) |
+
+The `LAMA_OLE_COLOR_*` variables customize the ANSI colors used for the chat
+prompt, your typed input, the thinking stream, the LLM output, and the context
+meter (green below 70% usage, yellow from 70%, red from 90%). Each accepts a
+comma-separated color spec: a named foreground color (`black`…`white`, `bright_*`,
+`grey`/`gray`), a 256-color number (`0`–`255`), a hex value (`#rrggbb`), plus
+attributes (`bold`, `italic`, `underline`, `dim`, `reverse`). Examples:
+`bold,green`, `#ff8700`, `bright_cyan`. Use `default` or `none` to restore the
+built-in color. Your typed input is echoed in the input color by appending its
+escape code to the prompt (so it matches the replay); the default is `bright_cyan`
+while the model output defaults to `bright_white`.
+These are theme preferences, so they are configured via the env/config files
+only (the CLI keeps just the `--color` on/off switch); an invalid value prints a
+warning and keeps the built-in default.
 
 Booleans accept `1/true/yes/on` and `0/false/no/off` (case-insensitive).
 `--tool` values are merged with the configured default (config first, deduplicated)
