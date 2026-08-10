@@ -23,8 +23,9 @@ lama_ole.py --host localhost -m gemma4:26b-a4b-it-qat --chat -t -v --tool tools.
   message) as its own NDJSON line (`--logndjson`).
 - **Flexible Input** — Direct string (`-i`), file (`-f`), or stdin (`--stdin`).
 - **Chat Mode** — Multi-turn REPL with slash commands (`--chat`).
-- **Plan / Build Modes** — Switch between an opencode-style read-only *plan*
-  mode and the full *build* mode with **Shift+Tab**, `/plan`, or `/build`.
+- **Plan / Build Modes** — Switch between a read-only *plan* mode (write tools
+  blocked, still advertised) and the full *build* mode with **Shift+Tab**,
+  `/plan`, or `/build`.
 - **Tool Calling** — Load Python modules as callable tools (`--tool`).
 - **Tool Documentation** — Inspect loaded tools, their signatures, and
   environment variables (`--help-tools`).
@@ -297,7 +298,7 @@ In chat mode (`--chat`), lines starting with `/` are commands:
 | `/new` | Start a new session (the previous session is preserved and can be restored with `/resume`) |
 | `/compact [auto on\|off]` | Compact the context now (summarize older turns, keep recent verbatim), or toggle/show auto-compaction |
 | `/model <name>` | Switch to a different model |
-| `/plan` | Switch to plan mode (read-only tools only, no changes) |
+| `/plan` | Switch to plan mode (write tools blocked until `/build`) |
 | `/build` | Switch to build mode (full tools, changes allowed) |
 | `/save <path>` | Save the conversation to a JSON file (model, messages, active skill, system prompt and loaded toolsets) |
 | `/load <path>` | Load a conversation from a JSON file (restores the active skill, system prompt and re-loads toolsets) |
@@ -395,11 +396,12 @@ is not a terminal.
 The chat agent runs in one of two opencode-style modes:
 
 * **Build** (default) — full access to every loaded tool; changes are allowed.
-* **Plan** — read-only: the model is told to analyze and plan without making
-  changes, and only tools from modules marked read-only (`__tool_readonly__ =
-  True`, e.g. `tools.dev_tools_readonly`, `tools.web_tools`,
-  `tools.media_understanding_tools`) are advertised. Mutating toolsets remain
-  loaded but are hidden from the model until you switch back.
+* **Plan** — the model is told to analyze and plan without making changes. All
+  loaded tools remain advertised so the model knows what exists, but write tools
+  refuse to execute: a call returns a plan-mode notice instead of running.
+  Read-only tools (modules marked `__tool_readonly__ = True`, e.g.
+  `tools.dev_tools_readonly`, `tools.web_tools`, `tools.media_understanding_tools`)
+  still work normally.
 
 Switch modes with **Shift+Tab** (a single keystroke that toggles between `/plan`
 and `/build`), or type `/plan` / `/build`. The prompt always shows the current
@@ -411,10 +413,10 @@ plan-safe, add a module-level `__tool_readonly__ = True`.
 **Shift+Tab also works mid-turn** — while the model is streaming or a tool is
 running, it switches mode without interrupting the current response. The switch
 takes effect immediately for tool execution: any write tool that arrives after
-the switch is blocked (the error is fed back to the model) and the next
-tool-calling round advertises only read-only tools. Printable keys typed
-mid-turn are captured and replayed into the next prompt's line buffer; Enter
-and arrow keys are ignored while the model is working.
+the switch is blocked (the plan-mode notice is fed back to the model) while the
+advertised tool list stays unchanged. Printable keys typed mid-turn are captured
+and replayed into the next prompt's line buffer; Enter and arrow keys are
+ignored while the model is working.
 
 ## Sessions
 
@@ -491,7 +493,7 @@ and `/load`.
 | `--vision_model MODEL` | Vision model for media tools (repeatable) | (auto-detect) |
 | `--help-tools` | Show loaded tool documentation and exit | |
 | `--safe` | Confirm before dangerous tool operations | |
-| `--mode MODE` | Chat agent mode: `build` or `plan` | `build` |
+| `--mode MODE` | Chat agent mode: `build` or `plan` (write tools blocked in plan) | `build` |
 | `--max_tool_rounds N` | Max tool-calling rounds | (no limit) |
 | `--max_tool_rounds_continuation` | Behavior at limit: `ask` or `fallback` | `ask` |
 | `-l, --list` | List all available models | |

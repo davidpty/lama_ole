@@ -144,17 +144,12 @@ class ChatState:
         """Recompute the Ollama tool list from ``loaded_tools``.
 
         Called after every runtime load/unload so the next turn advertises
-        exactly the current set of tools. In plan mode only read-only tools
-        (from modules marked ``__tool_readonly__``) are advertised.
+        exactly the current set of tools. The full set is advertised in both
+        build and plan mode; write tools are gated at execution time instead
+        (see the engine's plan-mode gate), so the model always knows which
+        tools exist and will work once build mode is active.
         """
-        if not self.loaded_tools:
-            self.ollama_tools = None
-            return
-        if self.mode == "plan":
-            plan_tools = _plan_readonly_tools(self)
-            self.ollama_tools = to_ollama_tools(plan_tools) if plan_tools else None
-        else:
-            self.ollama_tools = to_ollama_tools(self.loaded_tools)
+        self.ollama_tools = to_ollama_tools(self.loaded_tools) if self.loaded_tools else None
 
     # -- mid-turn mode switching ----------------------------------------------
 
@@ -196,34 +191,14 @@ class ChatState:
 _MODES = ("build", "plan")
 
 
-def _module_is_readonly(module_name: str) -> bool:
-    """True when a loaded tool module declares itself read-only.
-
-    Read-only modules (e.g. ``tools.dev_tools_readonly``) set a module-level
-    ``__tool_readonly__ = True``; everything else defaults to not read-only so
-    plan mode never exposes a mutating tool accidentally.
-    """
-    mod = sys.modules.get(module_name)
-    if mod is None:
-        return False
-    return bool(getattr(mod, "__tool_readonly__", False))
-
-
-def _plan_readonly_tools(state: ChatState):
-    """Tools from read-only modules, used to advertise tools in plan mode."""
-    tools = []
-    for module_name in state.loaded_tool_modules:
-        if _module_is_readonly(module_name):
-            tools.extend(get_tools_of_module(module_name))
-    return tools
-
-
 def _set_mode(state: ChatState, mode: str, autosave: bool = True) -> None:
     """Switch the chat agent between build and plan mode.
 
-    Re-composes the system prompt (adds/removes the plan-mode block), filters
-    the advertised tool set to read-only tools, and re-points the Shift+Tab
-    toggle binding so the next keystroke returns to the other mode.
+    Re-composes the system prompt (adds/removes the plan-mode block) and
+    re-points the Shift+Tab toggle binding so the next keystroke returns to
+    the other mode. The advertised tool set is unchanged: all loaded tools
+    stay visible in plan mode, and write tools are refused at execution time
+    by the engine's plan-mode gate.
 
     ``autosave=False`` is used for mid-turn toggles from the hotkey thread so
     the session file is never written concurrently with the main thread.
@@ -236,7 +211,6 @@ def _set_mode(state: ChatState, mode: str, autosave: bool = True) -> None:
         return
     state.mode = mode
     state.apply_skill()
-    state.refresh_ollama_tools()
     _bind_mode_toggle(state)
     if autosave:
         autosave_session(state)
@@ -1188,7 +1162,7 @@ def _show_help():
     print("  /new            Start a new session (previous session is preserved)")
     print("  /compact [auto on|off]  Compact now, or toggle/show auto-compaction")
     print("  /model <name>   Switch to a different model")
-    print("  /plan           Switch to plan mode (read-only tools, no changes)")
+    print("  /plan           Switch to plan mode (write tools blocked until /build)")
     print("  /build          Switch to build mode (full tools, changes allowed)")
     print("  /save <path>    Save the conversation to a JSON file")
     print("  /load <path>    Load a conversation from a JSON file")
@@ -1441,7 +1415,8 @@ def apply_session(state: ChatState, data: dict, source: str = "session") -> None
     else:
         state.stats_by_model = {}
     # Mode must be restored before tool reload so refresh_ollama_tools()
-    # applies the plan-mode read-only filter to the reloaded tools.
+    # runs with the resumed mode in effect (tools are advertised in full in
+    # both modes; write tools are gated at execution time).
     if "mode" in data and data.get("mode") in _MODES:
         state.mode = data["mode"]
     if "loaded_tool_modules" in data:

@@ -9,11 +9,15 @@ SAFETY_SYSTEM_PROMPT = (
 )
 
 PLAN_MODE_SYSTEM_PROMPT = (
-    "You are in PLAN MODE. Do not make any changes and do not call tools that "
-    "modify files, state, or the system; only read-only tools are available. "
+    "You are in PLAN MODE. All loaded tools remain available to you and are "
+    "listed for reference, but tools that modify files, state, or the system "
+    "will NOT execute while plan mode is enforced: calling one returns a "
+    "plan-mode notice instead of running. Read-only tools still work normally. "
+    "Do not retry a blocked tool; the block is intentional, not a failure. "
     "Your task is to analyze, investigate, and produce a clear step-by-step "
     "plan. Ask clarifying questions when requirements are ambiguous. When the "
-    "user is ready to implement, tell them to switch to build mode."
+    "user is ready to implement, tell them to switch to build mode (/build) so "
+    "write tools can be used."
 )
 
 JSON_RETURN_PROMPT = (

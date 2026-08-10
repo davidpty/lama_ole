@@ -1,8 +1,8 @@
 """Tests for the plan/build mode switch (opencode-style) in the chat REPL.
 
-Covers the plan-mode system prompt, the /plan and /build commands, read-only
-tool filtering in plan mode, the prompt indicator, and session persistence of
-the active mode.
+Covers the plan-mode system prompt, the /plan and /build commands, full tool
+advertisement across both modes, the prompt indicator, and session persistence
+of the active mode.
 """
 
 import contextlib
@@ -95,32 +95,24 @@ def test_handle_plan_idempotent(capsys):
     assert "Already in plan mode." in capsys.readouterr().out
 
 
-def test_plan_filters_to_readonly_tools():
+def test_plan_keeps_all_tools_advertised():
     st = _state_with_tools(["tools.example_tools", "tools.edit"])
     assert set(_tool_names(st)) >= {"read_file", "edit"}
     chat._set_mode(st, "plan")
     names = _tool_names(st)
     assert "read_file" in names
-    assert "edit" not in names
+    assert "edit" in names
     chat._set_mode(st, "build")
     assert "edit" in _tool_names(st)
 
 
-def test_plan_mode_no_readonly_tools_advertises_none():
+def test_plan_mode_keeps_write_only_tools_advertised():
     st = _state_with_tools(["tools.edit"])
     chat._set_mode(st, "plan")
-    assert st.ollama_tools is None
-    chat._set_mode(st, "build")
     assert st.ollama_tools is not None
-
-
-def test_module_is_readonly():
-    import tools.example_tools  # noqa: F401
-    import tools.edit  # noqa: F401
-
-    assert chat._module_is_readonly("tools.example_tools") is True
-    assert chat._module_is_readonly("tools.edit") is False
-    assert chat._module_is_readonly("tools.does_not_exist") is False
+    assert "edit" in _tool_names(st)
+    chat._set_mode(st, "build")
+    assert "edit" in _tool_names(st)
 
 
 def test_mode_label():
@@ -166,7 +158,7 @@ def test_apply_session_ignores_invalid_mode():
     assert st.mode == "build"
 
 
-def test_resume_plan_session_keeps_plan_filter():
+def test_resume_plan_session_keeps_all_tools():
     st = _state_with_tools(["tools.example_tools", "tools.edit"])
     st.mode = "plan"
     st.messages = [{"role": "user", "content": "hi"}]
@@ -178,7 +170,7 @@ def test_resume_plan_session_keeps_plan_filter():
     assert st2.mode == "plan"
     names = _tool_names(st2)
     assert "read_file" in names
-    assert "edit" not in names
+    assert "edit" in names
 
 
 def test_switch_round_trip_preserves_mode():
