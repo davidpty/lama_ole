@@ -163,7 +163,7 @@ def build_parser():
     parser.add_argument(
         "-V", "--version",
         action="version",
-        version="0.0.49"
+        version="0.0.50"
     )
     # Define arguments
     parser.add_argument(

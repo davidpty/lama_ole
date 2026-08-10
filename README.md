@@ -241,6 +241,43 @@ python3 lama_ole.py -m llama3.2:3b -i "Transcribe this recording" \
 | `tools.video_tools` | Basic video operations | video format conversion, trimming |
 | `tools.audio_tools` | Basic audio operations | audio format conversion |
 | `tools.read_base64` | Base64 decoding | decode base64 strings |
+| `tools.lsp_tools` | Language Server integration (code intelligence) | `lsp_start`, `lsp_open`, `lsp_hover`, `lsp_definition`, `lsp_references`, `lsp_completion`, `lsp_signature_help`, `lsp_document_symbols`, `lsp_workspace_symbols`, `lsp_diagnostics`, `lsp_status`, `lsp_stop` |
+
+## LSP Tools
+
+The `tools.lsp_tools` toolset gives the model IDE-style code intelligence by
+talking to a real [Language Server](https://microsoft.github.io/language-server-protocol/)
+over stdio (JSON-RPC 2.0 with `Content-Length` framing). All tools are
+read-only; files are still edited with the `edit` toolset and re-synced into
+the server automatically before every query.
+
+```bash
+python3 lama_ole.py -m <model> --chat --tool tools.lsp_tools --tool tools.edit
+```
+
+- `lsp_start` — start a session for a language (`python`, `typescript`, `rust`,
+  `go`, `cpp`, `c`, `json`, ...). Sessions are long-lived; queries auto-start a
+  session for the file's language, so `lsp_start` is optional.
+- `lsp_open` / automatic sync — the server always sees the on-disk file content
+  (mtime/size checks); edits made by other tools are picked up before each query.
+- `lsp_hover`, `lsp_definition`, `lsp_references`, `lsp_completion`,
+  `lsp_signature_help`, `lsp_document_symbols`, `lsp_workspace_symbols` — the
+  standard code-intelligence queries. Positions are 0-based; character offsets
+  are UTF-16 code units (per the LSP spec).
+- `lsp_diagnostics` — errors/warnings cached from the server's
+  `publishDiagnostics` push notifications (no round-trip).
+- `lsp_status` / `lsp_stop` — inspect and shut down sessions.
+
+Server commands come only from a built-in table or the `LAMA_OLE_LSP_SERVERS`
+environment variable — the model can never execute an arbitrary command:
+
+```bash
+export LAMA_OLE_LSP_SERVERS='{"python": "pyright-langserver --stdio", "rust": ["rust-analyzer"]}'
+```
+
+If a server crashes, the next query auto-restarts it once; a second crash in a
+row asks you to run `lsp_start` again. See `llm_blueprint/lsp_tools/` for the
+design docs.
 
 ## Model Transfer
 

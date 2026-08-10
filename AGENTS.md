@@ -21,11 +21,20 @@ lama_ole/
 │   ├── registry.py          # @tool decorator, tool loading
 │   └── utils.py             # _infer_params, create_uuid_15
 ├── chat.py                  # ChatState + REPL with slash commands (/feed, /new, /model, /skill, /stats, etc.)
+├── lsp/                     # Language Server integration engine (JSON-RPC over stdio)
+│   ├── __init__.py          # Public re-exports (JsonRpcCodec, LspClient, LspSessionManager, resolve_server, ...)
+│   ├── jsonrpc.py           # JsonRpcCodec: Content-Length framing, incremental parser
+│   ├── client.py            # LspClient: server subprocess + reader thread, requests/notifications, crash detection
+│   ├── registry.py          # DEFAULT_LSP_SERVERS + LAMA_OLE_LSP_SERVERS override, language_for_path
+│   └── session.py           # LspSessionManager: one session per language, document freshness, diagnostics cache
 ├── README.md                # Full documentation
 ├── skills/                  # Skill library loaded into the system role (/skill, --skill)
 │   ├── code-reviewer.md
 │   └── german-assistant.md
 ├── tests/                   # pytest-style + unittest-style tests
+│   ├── fakes/fake_lsp_server.py  # deterministic scripted LSP server for the LSP tests
+│   ├── lsp_fixtures.py           # fake-server script helpers (standard_script, diag_script, ...)
+│   ├── test_lsp_*.py             # jsonrpc / client / session / tools / integration tests
 │   └── run_all_tests.py     # Runs both frameworks (see "Running the Tests")
 └── tools/                   # Loadable tool modules (each is a Python module)
     ├── __init__.py
@@ -36,6 +45,7 @@ lama_ole/
     ├── image_tools.py       # Image format conversion/resizing
     ├── video_tools.py       # Video format conversion/trimming
     ├── audio_tools.py       # Audio format conversion
+    ├── lsp_tools.py         # LSP code-intelligence toolset (hover, definition, diagnostics, ...)
     └── blob_server.py       # HTTP server for remote model transfer
 ```
 
@@ -48,6 +58,7 @@ lama_ole/
 | **`lama_ole.py`** | CLI entry point. Parses args, creates Ollama `Client`, handles model listing/transfer/blob-server as standalone modes, then delegates to either `run_with_tools()` (one-shot) or `ChatState` + `run_chat()` (REPL). Contains the full model transfer logic (`FilesystemBlobSource`, `HttpBlobSource`). |
 | **`tool_base/`** | Core engine package. Defines `@tool` decorator that auto-infers JSON Schema from type annotations, registers tools in a registry (`registry.py`). `run_with_tools()` (`engine.py`) is the main loop: prepends safety system prompt, streams chat responses, handles tool calls (invoke → wrap result with `[data from ...]` markers → feed back to model), supports safe-mode confirmation for dangerous tools. `loop_states.py` provides `ExecutionState`/`StateManager` for state tracking and robust Ctrl-C handling. `logging.py` provides the centralized `StateLogger` used for granular timestamps. |
 | **`chat.py`** | Interactive REPL (`ChatState`). Manages multi-turn conversation history, slash commands (`/feed`, `/new`, `/model`, `/save`, `/load`, `/tools` (load/unload/show toolsets), `/skill`, `/stats`, `/systemprompt`, `/context`, `/help`, `/exit`), and delegates each turn to `run_with_tools()`. |
+| **`lsp/`** | LSP integration engine. `jsonrpc.py` (`JsonRpcCodec`) does `Content-Length` framing with an incremental parser; `client.py` (`LspClient`) owns one server subprocess per session with an always-on `read1` reader thread, JSON-RPC requests/notifications, and crash detection; `registry.py` maps language ids to server commands (built-in table + `LAMA_OLE_LSP_SERVERS` env override — the LLM never supplies commands); `session.py` (`LspSessionManager`) keeps one client per language, re-syncs changed files (mtime/size) with didOpen/didChange, caches push diagnostics, auto-restarts a crashed server once per explicit start, and registers an `atexit` `stop_all`. |
 | **`tools/*.py`** | Tool modules. Each exports functions decorated with `@tool`. Tools can declare env vars via module-level `__tool_env__` dict (shown by `--help-tools`). |
 
 ---
