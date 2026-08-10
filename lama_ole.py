@@ -170,7 +170,7 @@ def build_parser():
         "--host",
         type=str,
         default=_env_str("LAMA_OLE_HOST", "http://localhost:11434"),
-        help="The host of the ollama instance (e.g., localhost:11434)"
+        help="The host of the ollama instance (e.g. http://localhost:11434)"
     )
     parser.add_argument(
         "-m", "--model",
@@ -235,7 +235,7 @@ def build_parser():
         "--temperature",
         type=float,
         default=_env_float("LAMA_OLE_TEMPERATURE", 0.0),
-        help="Set the sampling temperature (e.g., 0.7). Default is 0.0"
+        help="Set the sampling temperature (e.g., 0.7)"
     )
 
     # Parameter: num_ctx
@@ -342,7 +342,7 @@ def build_parser():
         type=str,
         default=_env_choice("LAMA_OLE_COLOR", "auto", ["auto", "always", "never", "none"]),
         choices=["auto", "always", "never", "none"],
-        help="Colorize user input, thinking, and LLM output: 'auto' (TTY only), 'always', or 'never'/'none' (default: auto)"
+        help="Colorize user input, thinking, and LLM output: 'auto' (TTY only), 'always', or 'never'/'none'"
     )
 
     # Parameter: context window meter
@@ -375,7 +375,7 @@ def build_parser():
         "--auto-compact-model",
         type=str,
         default=_env_str("LAMA_OLE_AUTO_COMPACT_MODEL", None),
-        help="Model used to produce compaction summaries (default: the chat model)"
+        help="Model used to produce compaction summaries (falls back to the chat model)"
     )
 
     # Parameter: safe
@@ -432,7 +432,7 @@ def build_parser():
         "--max_tool_rounds",
         type=int,
         default=_env_int("LAMA_OLE_MAX_TOOL_ROUNDS", None),
-        help="Maximum number of tool-calling rounds (default: no limit)"
+        help="Maximum number of tool-calling rounds (no limit when unset)"
     )
 
     # Parameter: vision_model (repeatable)
@@ -470,13 +470,13 @@ def build_parser():
         "--blob-host",
         type=str,
         default="127.0.0.1",
-        help="Host to bind blob server (default: 127.0.0.1)"
+        help="Host to bind blob server"
     )
     parser.add_argument(
         "--blob-port",
         type=int,
         default=0,
-        help="Port for blob server (default: random)"
+        help="Port for blob server (0 = random)"
     )
 
     # Parameter: max_tool_rounds_continuation
