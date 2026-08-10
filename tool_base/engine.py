@@ -504,10 +504,17 @@ def run_with_tools(
                     if tool_obj:
                         if _current_mode() == "plan" and not tool_obj.readonly:
                             # Mid-turn safety net: a write tool proposed before
-                            # the user toggled to plan mode must not run.
+                            # the user toggled to plan mode must not run. The
+                            # model should learn the tool still exists and will
+                            # work once build mode is activated.
                             result = {
                                 "status": "error",
-                                "message": f"Execution of '{tool_name}' blocked in plan mode (write tool).",
+                                "message": (
+                                    f"Execution of '{tool_name}' blocked: plan mode is "
+                                    "currently enforced. This tool is still available and "
+                                    "will run once build mode is activated (/build). Do not "
+                                    "retry it; continue planning with read-only tools."
+                                ),
                             }
                         else:
                             should_run = True

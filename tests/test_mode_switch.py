@@ -4,8 +4,8 @@ Covers:
 - the pure ``EscapeSequenceParser`` (Shift+Tab byte detection),
 - the ``TypeAheadBuffer`` (replayable mid-turn typing),
 - the engine's execution-time write-tool gate in plan mode,
-- the mid-turn advertised-tool-list refresh, and
-- ``ModeHotkeyListener`` no-op behavior when there is no tty.
+- the mid-turn tool-list stability (write tools stay advertised, gated at run time),
+- and ``ModeHotkeyListener`` no-op behavior when there is no tty.
 """
 
 import os
@@ -181,7 +181,7 @@ def _blocked_tool_messages(messages):
     return [
         m.get("content", "")
         for m in messages
-        if m.get("role") == "tool" and "blocked in plan mode" in m.get("content", "")
+        if m.get("role") == "tool" and "plan mode" in m.get("content", "")
     ]
 
 
@@ -249,7 +249,7 @@ def test_write_tool_runs_in_build_mode():
     assert result == "done"
 
 
-def test_mid_turn_flip_blocks_later_writes_and_refreshes_tools():
+def test_mid_turn_flip_blocks_later_writes_without_changing_tools():
     state = MutableModeState(mode="build", ollama_tools=["tools-v1"])
     called = []
 
@@ -257,7 +257,6 @@ def test_mid_turn_flip_blocks_later_writes_and_refreshes_tools():
         called.append("write")
         # Mid-turn toggle: the user hits Shift+Tab while this turn is in flight.
         state.mode = "plan"
-        state.ollama_tools = ["tools-v2"]
         return {"status": "success", "data": "ok"}
 
     def read_fn():
@@ -291,8 +290,9 @@ def test_mid_turn_flip_blocks_later_writes_and_refreshes_tools():
     assert called == ["write", "read"]
     assert result == "done"
     assert _blocked_tool_messages(messages)
-    # Round 2's request advertises the refreshed (read-only) tool list.
-    assert client.calls[1]["tools"] == ["tools-v2"]
+    # The advertised tool list is unchanged after the flip; write tools are
+    # gated at execution time instead of being unloaded from the model.
+    assert client.calls[1]["tools"] == ["tools-v1"]
 
 
 # ---------------------------------------------------------------------------

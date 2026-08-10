@@ -393,7 +393,7 @@ def build_parser():
         default=_env_choice("LAMA_OLE_MODE", "build", ["build", "plan"]),
         choices=["build", "plan"],
         help="Chat agent mode: 'build' (full tools, changes allowed) or "
-             "'plan' (read-only tools, no changes)"
+             "'plan' (all tools advertised, write tools blocked until /build)"
     )
 
     # Parameter: tool (repeatable)
