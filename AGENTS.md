@@ -107,6 +107,16 @@ All new tools and refactored existing tools **must** follow the pattern used in 
     -   **Error**: `{"status": "error", "message": [<list_of_strings_or_string>]}`.
 3.  **Safety Checks**: Perform validation (e.g., path traversal checks, permission checks) at the beginning of the function and return an error dictionary if validation fails.
 
+### CLI Help Defaults (Mandatory)
+
+`build_parser()` in `lama_ole.py` uses `argparse.ArgumentDefaultsHelpFormatter`,
+which appends `(default: <value>)` to each option's help from its `default=`
+argument automatically. Therefore **help strings must never hardcode a default
+value** — writing `(default: ...)` (or "Default is ...") inside `help=` produces
+doubled/duplicated output and lets the help text drift from the code. Use the
+actual `default=` as the single source of truth; this is enforced by
+`tests/test_help_defaults.py`.
+
 ---
 
 ### Python 3.9+ Compatibility (Mandatory)
