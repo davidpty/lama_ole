@@ -96,6 +96,52 @@ def edit( path: str, search: str, replace: str) -> str:
     except Exception as e:
         return {"status": "error", "message": ["Error applying patch:", str(e)]}
 
+@tool(description="""Replaces the contiguous range of text from 'search_from' to 'search_to' (both inclusive) with the 'replace' string in the file at 'path'. Both 'search_from' and 'search_to' must each match exactly once in the file, must not overlap, and 'search_from' must come before 'search_to'.""")
+def edit_range_based( path: str, search_from: str, search_to: str, replace: str) -> str:
+    # 1. Safety Check
+
+    if not os.path.exists(path):
+        return {"status": "error", "message": ["File", path, "does not exist."]}
+
+    safety_error = _validate_path(path)
+    if safety_error:
+        return {"status": "error", "message": [safety_error]}
+
+    # 2. Read original content
+    with open(path, "r", encoding="utf-8") as f:
+        original_text = f.read()
+
+    from_count = original_text.count(search_from)
+    if from_count != 1:
+        return {"status": "error", "message": ["Error: search_from string matches not exactly 1 time :", from_count]}
+
+    to_count = original_text.count(search_to)
+    if to_count != 1:
+        return {"status": "error", "message": ["Error: search_to string matches not exactly 1 time :", to_count]}
+
+    from_start = original_text.index(search_from)
+    from_end = from_start + len(search_from)
+    to_start = original_text.index(search_to)
+    to_end = to_start + len(search_to)
+
+    if from_end > to_start:
+        return {"status": "error", "message": ["Error: search_from and search_to overlap, or search_from does not come before search_to."]}
+
+    edited_text = original_text[:from_start] + replace + original_text[to_end:]
+
+    try:
+        with open(path, "w", encoding="utf-8") as f:
+            f.write( edited_text)
+        return {
+            "status": "success",
+            "data": f"Successfully applied patch to {path}.",
+            "file": path,
+            "diff": _unified_diff(original_text, edited_text, path),
+        }
+
+    except Exception as e:
+        return {"status": "error", "message": ["Error applying patch:", str(e)]}
+
 @tool(description="Creates a new file with the specified content at the given path. Fails if the file already exists.")
 def create_new_file(path: str, content: str):
     # 1. Safety Check

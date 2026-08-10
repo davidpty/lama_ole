@@ -16,7 +16,7 @@ from tools_security.validate_path import register_basepath
 
 register_basepath("/tmp")
 
-from tools.edit import edit, create_new_file, makedirs
+from tools.edit import edit, edit_range_based, create_new_file, makedirs
 
 
 @contextlib.contextmanager
@@ -80,6 +80,86 @@ class TestEditTool(unittest.TestCase):
         
         self.assertEqual( {'status': 'error', 'message': ['Error: search string matches not exactly 1 time :', 2]} , result)
 #
+    def test_edit_range_based_success(self):
+        """Test successful replacement of a contiguous range."""
+        search_from = "Hello world!"
+        search_to = "Goodbye world!"
+        replace_str = "Replaced!"
+
+        result = edit_range_based(self.test_file_path, search_from, search_to, replace_str)
+
+        self.assertEqual(result["status"], "success")
+        self.assertEqual(
+            result["data"],
+            "Successfully applied patch to " + self.test_file_path + ".",
+        )
+        self.assertEqual(result["file"], self.test_file_path)
+        self.assertIn("-Hello world!", result["diff"])
+        self.assertIn("-Goodbye world!", result["diff"])
+        self.assertIn("+Replaced!", result["diff"])
+
+        with open(self.test_file_path, "r", encoding="utf-8") as f:
+            content = f.read()
+        self.assertEqual(content, "Replaced!")
+
+    def test_edit_range_based_multiple_from_matches(self):
+        """Error when search_from appears more than once."""
+        result = edit_range_based(self.test_file_path, "world!", "a test.", "x")
+        self.assertEqual(
+            {"status": "error", "message": ["Error: search_from string matches not exactly 1 time :", 2]},
+            result,
+        )
+
+    def test_edit_range_based_multiple_to_matches(self):
+        """Error when search_to appears more than once."""
+        result = edit_range_based(self.test_file_path, "Hello world!", "world!", "x")
+        self.assertEqual(
+            {"status": "error", "message": ["Error: search_to string matches not exactly 1 time :", 2]},
+            result,
+        )
+
+    def test_edit_range_based_overlap_to_inside_from(self):
+        """Error when search_to is nested inside search_from."""
+        search_from = "This is a test.\nGoodbye world!"
+        search_to = "Goodbye"
+        result = edit_range_based(self.test_file_path, search_from, search_to, "x")
+        self.assertEqual(
+            {"status": "error", "message": ["Error: search_from and search_to overlap, or search_from does not come before search_to."]},
+            result,
+        )
+
+    def test_edit_range_based_overlap_from_inside_to(self):
+        """Error when search_from is nested inside search_to."""
+        search_from = "Hello world"
+        search_to = "Hello world!\nThis is a test."
+        result = edit_range_based(self.test_file_path, search_from, search_to, "x")
+        self.assertEqual(
+            {"status": "error", "message": ["Error: search_from and search_to overlap, or search_from does not come before search_to."]},
+            result,
+        )
+
+    def test_edit_range_based_same_anchor(self):
+        """Error when search_from and search_to are the same string."""
+        result = edit_range_based(self.test_file_path, "test", "test", "x")
+        self.assertEqual(
+            {"status": "error", "message": ["Error: search_from and search_to overlap, or search_from does not come before search_to."]},
+            result,
+        )
+
+    def test_edit_range_based_wrong_order(self):
+        """Error when search_from comes after search_to."""
+        result = edit_range_based(self.test_file_path, "Goodbye world!", "Hello world!", "x")
+        self.assertEqual(
+            {"status": "error", "message": ["Error: search_from and search_to overlap, or search_from does not come before search_to."]},
+            result,
+        )
+
+    def test_edit_range_based_file_unchanged_on_error(self):
+        """Failed range edits must leave the file untouched."""
+        edit_range_based(self.test_file_path, "world!", "a test.", "x")
+        with open(self.test_file_path, "r", encoding="utf-8") as f:
+            self.assertEqual(f.read(), self.original_content)
+
     def test_create_new_file_bare_filename(self):
         """Bare relative filenames must not crash (regression: makedirs(''))."""
         with _cwd(self.test_dir):
