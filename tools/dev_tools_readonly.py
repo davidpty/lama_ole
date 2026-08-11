@@ -157,6 +157,75 @@ def grep(pattern: str, path: str = ".", include: str = "*", fixed = False) -> Di
 def grepF(pattern: str, path: str = ".", include: str = "*") -> Dict[str, Any]:
     return grep( pattern, path, include, fixed = True)
 
+@tool(description="Search for range based regex pattern in a file, both patterns must exist in that file")
+def grep_range_based(pattern_from: str, pattern_to: str, path: str = ".", include: str = "*", fixed = False) -> Dict[str, Any]:
+    safety_error = _validate_path(path)
+    if safety_error:
+        return {"status": "error", "message": [safety_error]}
+
+    if fixed:
+        pattern_from = re.escape(pattern_from)
+        pattern_to = re.escape(pattern_to)
+
+    safety_error = _validate_path(path)
+    if safety_error:
+        return {"status": "error", "message": [safety_error]}
+
+    try:
+        with open(path, "rb") as f:
+            raw_content = f.read()
+
+        from security.entropychecker import EntropyChecker
+
+        result = EntropyChecker().feed(raw_content)
+        if result.is_suspicious:
+            return {
+                "status": "error",
+                "message": [f"File rejected by entropy check: {result.reason}"],
+            }
+
+        content = raw_content.decode("utf-8", errors="replace")
+
+        i1 = re.finditer( pattern_from, content)
+        try :
+            m1 = next( i1)
+            try : 
+               next( i1) 
+               return {"status": "error", "message": ["Error: pattern_from matches more than 1 time :"]}
+            except StopIteration:
+               pass
+        except StopIteration: 
+            return {"status": "error", "message": ["Error: pattern_from matches 0 times :"]}
+
+        i2 = re.finditer( pattern_to, content)
+        try :
+            m2 = next( i2)
+            try : 
+               next( i2) 
+               return {"status": "error", "message": ["Error: pattern_to matches more than 1 time :"]}
+            except StopIteration:
+               pass
+        except StopIteration: 
+            return {"status": "error", "message": ["Error: pattern_to matches 0 times :"]}
+
+        print
+
+        (idx_from, _) = m1.span()
+        (_, idx_to) = m2.span()
+
+        print( content)
+        print( m1.span())
+        print( m2.span())
+
+        return {"status": "success", "data": content[idx_from:idx_to]}
+    except Exception as e:
+        return {"status": "error", "message": [str(e)]}
+
+
+@tool(description="Search for a fixed string range in files under a path")
+def grepF_range_based(pattern_from: str, pattern_to: str, path: str = ".", include: str = "*") -> Dict[str, Any]:
+    return grep_range_based( pattern_from, pattern_to, path, include, fixed = True)
+
 
 @tool(description="Find files matching a glob pattern")
 def glob_pattern(pattern: str) -> Dict[str, Any]:
