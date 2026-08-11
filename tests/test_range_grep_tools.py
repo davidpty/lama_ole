@@ -180,6 +180,23 @@ class TestGrepFRangeBased(unittest.TestCase):
         self.assertEqual(result["status"], "success")
         self.assertEqual(result["data"], self.content)
 
+    def test_path_traversal_blocked(self):
+        result = grepF_range_based("cd", "ef", os.path.join(self.test_dir, "..", "secret.txt"))
+        self.assertEqual(result["status"], "error")
+        self.assertIn("Blocked by safety check", result["message"][0])
+
+    def test_file_not_found(self):
+        result = grepF_range_based("cd", "ef", os.path.join(self.test_dir, "ghost.txt"))
+        self.assertEqual(result["status"], "error")
+
+    def test_entropy_rejected(self):
+        binary_file = os.path.join(self.test_dir, "random.bin")
+        with open(binary_file, "wb") as f:
+            f.write(os.urandom(1024))
+        result = grepF_range_based(None, None, binary_file)
+        self.assertEqual(result["status"], "error")
+        self.assertIn("entropy check", result["message"][0])
+
 
 if __name__ == "__main__":
     unittest.main()
