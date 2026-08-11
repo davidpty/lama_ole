@@ -142,6 +142,98 @@ def edit_range_based( path: str, search_from: str, search_to: str, replace: str)
     except Exception as e:
         return {"status": "error", "message": ["Error applying patch:", str(e)]}
 
+@tool(description="""Replaces the contiguous range of text from 'pe_search_from' to 'pe_search_to' (both inclusive) in the file at 'path2edit' with the contiguous range of text from 'pg_search_from' to 'pg_search_to' (both inclusive) read from the file at 'path2grep'. All search strings are fixed strings and must each match exactly once. If a search string is None or not provided, the start of the corresponding file is meant for the *_from parameters and the end of the corresponding file for the *_to parameters.""")
+def edit_range_based_file( path2edit: str, path2grep: str, pe_search_from: str = None, pe_search_to: str = None, pg_search_from: str = None, pg_search_to: str = None ) -> str:
+    # 1. Safety Checks
+
+    if not os.path.exists(path2edit):
+        return {"status": "error", "message": ["File", path2edit, "does not exist."]}
+
+    safety_error = _validate_path(path2edit)
+    if safety_error:
+        return {"status": "error", "message": [safety_error]}
+
+    if path2grep is None:
+        return {"status": "error", "message": ["Error: path2grep must be provided."]}
+
+    if not os.path.exists(path2grep):
+        return {"status": "error", "message": ["File", path2grep, "does not exist."]}
+
+    safety_error = _validate_path(path2grep)
+    if safety_error:
+        return {"status": "error", "message": [safety_error]}
+
+    # 2. Read original content of both files
+    with open(path2edit, "r", encoding="utf-8") as f:
+        original_text = f.read()
+
+    with open(path2grep, "r", encoding="utf-8") as f:
+        grep_text = f.read()
+
+    # 3. Locate the range in path2edit (fixed string search, exactly one match each)
+    if pe_search_from is None:
+        pe_from_start = 0
+    else:
+        pe_from_count = original_text.count(pe_search_from)
+        if pe_from_count != 1:
+            return {"status": "error", "message": ["Error: pe_search_from string matches not exactly 1 time :", pe_from_count]}
+        pe_from_start = original_text.index(pe_search_from)
+
+    if pe_search_to is None:
+        pe_to_end = len(original_text)
+    else:
+        pe_to_count = original_text.count(pe_search_to)
+        if pe_to_count != 1:
+            return {"status": "error", "message": ["Error: pe_search_to string matches not exactly 1 time :", pe_to_count]}
+        pe_to_start = original_text.index(pe_search_to)
+        pe_to_end = pe_to_start + len(pe_search_to)
+
+    if pe_search_from is not None and pe_search_to is not None:
+        pe_from_end = pe_from_start + len(pe_search_from)
+        if pe_from_end > pe_to_start:
+            return {"status": "error", "message": ["Error: pe_search_from and pe_search_to overlap, or pe_search_from does not come before pe_search_to."]}
+
+    # 4. Locate the range in path2grep (fixed string search, exactly one match each)
+    if pg_search_from is None:
+        pg_from_start = 0
+    else:
+        pg_from_count = grep_text.count(pg_search_from)
+        if pg_from_count != 1:
+            return {"status": "error", "message": ["Error: pg_search_from string matches not exactly 1 time :", pg_from_count]}
+        pg_from_start = grep_text.index(pg_search_from)
+
+    if pg_search_to is None:
+        pg_to_end = len(grep_text)
+    else:
+        pg_to_count = grep_text.count(pg_search_to)
+        if pg_to_count != 1:
+            return {"status": "error", "message": ["Error: pg_search_to string matches not exactly 1 time :", pg_to_count]}
+        pg_to_start = grep_text.index(pg_search_to)
+        pg_to_end = pg_to_start + len(pg_search_to)
+
+    if pg_search_from is not None and pg_search_to is not None:
+        pg_from_end = pg_from_start + len(pg_search_from)
+        if pg_from_end > pg_to_start:
+            return {"status": "error", "message": ["Error: pg_search_from and pg_search_to overlap, or pg_search_from does not come before pg_search_to."]}
+
+    # 5. Replace the edit range (inclusive of the boundary patterns) with the grep range
+    replace = grep_text[pg_from_start:pg_to_end]
+
+    edited_text = original_text[:pe_from_start] + replace + original_text[pe_to_end:]
+
+    try:
+        with open(path2edit, "w", encoding="utf-8") as f:
+            f.write( edited_text)
+        return {
+            "status": "success",
+            "data": f"Successfully applied patch to {path2edit}.",
+            "file": path2edit,
+            "diff": _unified_diff(original_text, edited_text, path2edit),
+        }
+
+    except Exception as e:
+        return {"status": "error", "message": ["Error applying patch:", str(e)]}
+
 @tool(description="Creates a new file with the specified content at the given path. Fails if the file already exists.")
 def create_new_file(path: str, content: str):
     # 1. Safety Check

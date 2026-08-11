@@ -1,8 +1,10 @@
 """Optional integration test against a real language server.
 
-These tests only run when a real LSP server binary is found on ``PATH`` (the
-deterministic fake server is used everywhere else). When no server is present
-the whole module self-skips so the suite stays green on minimal machines.
+These tests are opt-in: they only run when ``LAMA_OLE_LSP_INTEGRATION=1`` is
+set AND a real LSP server binary is found on ``PATH`` (the deterministic fake
+server is used everywhere else). By default the whole module self-skips so the
+suite stays green on any machine, regardless of which language servers happen
+to be installed.
 """
 
 import os
@@ -45,10 +47,12 @@ def _available_server():
 
 LANGUAGE, COMMAND = _available_server()
 
+_INTEGRATION_ENABLED = os.environ.get("LAMA_OLE_LSP_INTEGRATION", "") == "1"
+
 pytestmark = pytest.mark.skipif(
-    LANGUAGE is None,
-    reason="no real language server on PATH; run the suite with one installed "
-    "to exercise the integration smoke test",
+    not _INTEGRATION_ENABLED or LANGUAGE is None,
+    reason="LSP integration tests are opt-in; set LAMA_OLE_LSP_INTEGRATION=1 "
+    "and have a working language server on PATH to run them",
 )
 
 _SAMPLE = "fn add(a: i32, b: i32) -> i32 { a + b }\n\nfn main() { let _ = add(1, 2); }\n"

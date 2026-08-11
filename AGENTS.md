@@ -108,6 +108,56 @@ python3 -m unittest discover -s tests -p "test_*.py" -v
 
 ---
 
+### Masking Out Tests (Opt-In Env-Var Guard)
+
+Environment-dependent tests (real LSP servers, legacy checkouts, …) must never
+be disabled by **commenting them out** — that silently removes them everywhere
+and leaves no way to re-enable them. Instead, mask them with the **opt-in
+env-var guard**: the tests skip by default and only run when a dedicated
+`LAMA_OLE_*` environment variable is explicitly set. This keeps the suite green
+on every machine while leaving the tests runnable on demand.
+
+Existing examples:
+
+```python
+# tests/test_lsp_integration.py  (optional integration tests)
+_INTEGRATION_ENABLED = os.environ.get("LAMA_OLE_LSP_INTEGRATION", "") == "1"
+
+pytestmark = pytest.mark.skipif(
+    not _INTEGRATION_ENABLED or LANGUAGE is None,
+    reason="LSP integration tests are opt-in; set LAMA_OLE_LSP_INTEGRATION=1 "
+    "and have a working language server on PATH to run them",
+)
+```
+
+```python
+# tests/test_help_defaults.py  (CLI help-defaults guard)
+_ENFORCE_HELP_DEFAULTS = os.environ.get("LAMA_OLE_ENFORCE_HELP_DEFAULTS", "") == "1"
+
+pytestmark = pytest.mark.skipif(
+    not _ENFORCE_HELP_DEFAULTS,
+    reason="CLI help-defaults guard is opt-in; set LAMA_OLE_ENFORCE_HELP_DEFAULTS=1 to run it",
+)
+```
+
+Rules for new masked tests:
+
+- Use a module-level `pytestmark = pytest.mark.skipif(...)` (pytest-only). Keep
+  module-level imports side-effect free so `unittest discover` (which imports
+  every `test_*.py`) stays harmless.
+- The skip `reason` must name the env var to set, so a skipped run is
+  self-explanatory.
+- Even when opted in, keep the environment precondition in the skip condition
+  (e.g. `LANGUAGE is None` for LSP) — a broken environment then produces a
+  skip, not a hard error.
+- Prefer opt-in over opt-out: the default suite must pass everywhere. An
+  opt-out gate (`LAMA_OLE_NO_*`) is only acceptable when the test is a guard
+  that should normally run.
+- Never mask a test because a single machine fails; either gate the test as
+  above or fix the machine.
+
+---
+
 ### Tool Implementation Standards (Mandatory)
 
 All new tools and refactored existing tools **must** follow the pattern used in `lama_ole/tools/edit.py`:
