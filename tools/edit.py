@@ -323,76 +323,37 @@ def edit_range_based_file2( path2edit: str, path2grep: str, pe_search_from1: str
     except Exception as e:
         return {"status": "error", "message": ["Error applying patch:", str(e)]}
 
-# /home/ox/aitasks/2026_08_12_12_tool_explanation/code.py
+@tool( """ 
+Replaces a specific text block in 'path2edit' with content extracted from 'path2grep'.
+The boundaries of the text blocks are defined by anchor strings split by a separator character (default: '|').
 
-@tool(description="""provides documentation for the tool edit_range_based_file3""")
-def edit_range_based_file3_help() : 
-    return { "status": "success", "data" :
-    """
-    Wrapper around edit_range_based_file2 that uses a separator to mark the split point.
+CRITICAL RULES FOR APPLICATION:
+1. 'pe_search_from' ("A|B") anchors the start of the deletion in the target file. The full anchor string in the file is "AB". Deletion begins right AFTER 'A'.
+2. 'pe_search_to' ("C|D") anchors the end of the deletion. The full anchor string in the file is "CD". Deletion ends right BEFORE 'D'.
+3. 'pg_search_from' ("1|2") and 'pg_search_to' ("3|4") anchor the start and end of the source content to copy from 'path2grep' using the identical logic.
 
-    Instead of providing two separate parts (X1 and X2) for each search parameter,
-    you provide a single string with a separator (default '|') that marks where the
-    range starts or ends. The full search string is the concatenation of the parts
-    around the separator.
+CONCRETE EXAMPLE:
+Target file ('path2edit') contains: "Hello 123456789 World"
+Source file ('path2grep') contains: "Source alpha bravo xray yankee Omega"
 
-    For example:
-        pe_search_from="ab|c" means the full search string is "abc" and the split
-        point is between "ab" and "c". The range starts at the position of "c".
+To replace "2345678" with "bravo xray":
+- Set sep = '|'
+- Set pe_search_from = "1|2"  (Matches "12", cuts after 1)
+- Set pe_search_to   = "8|9"  (Matches "89", cuts before 9)
+- Set pg_search_from = "alpha |bravo" (Matches "alpha bravo", starts extract at "bravo")
+- Set pg_search_to   = "xray| yankee" (Matches "xray yankee", ends extract at "xray")
 
-        pe_search_to="XYZ|after" means the full search string is "XYZafter" and the
-        split point is between "XYZ" and "after". The range ends at the position of "after".
+Output: The range from '2' to '8' is successfully overwritten by the content from 'bravo' to 'xray'.
+ """)
 
-    If no separator is present, the entire string is used as X1 and X2 is treated as None
-    (empty string), meaning the split point is at the end of the string.
-
-    Parameters:
-        path2edit: Path to the file to edit.
-        path2grep: Path to the file to read replacement content from.
-        pe_search_from: Marker in path2edit where the range starts, with optional separator.
-            e.g., "abc" (split at end) or "ab|c" (split between "ab" and "c").
-        pe_search_to: Marker in path2edit where the range ends, with optional separator.
-            e.g., "xyz" (split at end) or "xy|z" (split between "xy" and "z").
-        pg_search_from: Marker in path2grep where the source range starts, with optional separator.
-        pg_search_to: Marker in path2grep where the source range ends, with optional separator.
-        sep: The separator character that marks the split point. Default is '|'.
-
-    Returns:
-        Result string from edit_range_based_file2.
-
-    Examples:
-        # Replace content between [START] and [END] markers
-        edit_range_based_file3(
-            path2edit="target.txt",
-            path2grep="source.txt",
-            pe_search_from="[START]",
-            pe_search_to="[END]",
-            pg_search_from="[SRC_START]",
-            pg_search_to="[SRC_END]"
-        )
-
-        # Replace content from after "ab" to after "XYZ"
-        edit_range_based_file3(
-            path2edit="target.txt",
-            path2grep="source.txt",
-            pe_search_from="ab|c",
-            pe_search_to="XYZ|after",
-            pg_search_from="de|f",
-            pg_search_to="GHI|after"
-        )
-    """ }
-
-@tool( """Wrapper around edit_range_based_file2 that uses a separator to mark the split point.
-If no separator is present, the split point is at the end of the string.
- edit_range_based_file3_help() provides the documentation.""")
 def edit_range_based_file3(
     path2edit: str,
     path2grep: str,
+    sep: str,
     pe_search_from: str = None,
     pe_search_to: str = None,
     pg_search_from: str = None,
     pg_search_to: str = None,
-    sep: str = '|'
 ) -> str:
 
     """
@@ -411,8 +372,8 @@ def edit_range_based_file3(
         return {"status": "error", "message": ["sep must be at least 1 character long"]}
 
     for paramname in "pe_search_from,pe_search_to,pg_search_from,pg_search_to".split( ','):
-        if not eval( paramname).count( sep) in [0,1] :
-            return {"status": "error", "message": [f"parameter sep {sep} must match exactly 0 or 1 times in parameter {paramname}"]}
+        if eval( paramname).count( sep) != 1 :
+            return {"status": "error", "message": [f"parameter sep {sep} must match exactly 1 times in parameter {paramname}"]}
 
 
     def split_param(param, sep):
