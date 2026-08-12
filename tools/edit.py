@@ -382,7 +382,9 @@ def edit_range_based_file3_help() :
         )
     """ }
 
-@tool( """Wrapper around edit_range_based_file2 that uses a separator to mark the split point. edit_range_based_file3_help() provides the documentation.""")
+@tool( """Wrapper around edit_range_based_file2 that uses a separator to mark the split point.
+If no separator is present, the split point is at the end of the string.
+ edit_range_based_file3_help() provides the documentation.""")
 def edit_range_based_file3(
     path2edit: str,
     path2grep: str,
