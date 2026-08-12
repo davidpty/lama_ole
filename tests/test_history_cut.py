@@ -287,13 +287,19 @@ def test_parse_line_formats_view_override_merges(monkeypatch):
 def test_with_tool_results_unhides_only_tool_result(monkeypatch):
     monkeypatch.setenv("LAMA_OLE_FORMAT", "[{num}] {text}")
     formats = history_mod.with_tool_results(history_mod.parse_line_formats())
-    assert formats["tool_result"] == "[{num}] {ts}{role}: {text}"
+    # A bare shared template is inherited, so -t keeps tool results in style.
+    assert formats["tool_result"] == "[{num}] {text}"
     assert formats["user"] == "[{num}] {text}"
     # Already-visible tool results are left alone.
     formats = history_mod.with_tool_results(history_mod.parse_line_formats())
-    assert history_mod.with_tool_results(formats)["tool_result"] == (
-        "[{num}] {ts}{role}: {text}"
-    )
+    assert history_mod.with_tool_results(formats)["tool_result"] == "[{num}] {text}"
+
+
+def test_with_tool_results_default_style_without_bare(monkeypatch):
+    monkeypatch.setenv("LAMA_OLE_FORMAT", "tool_result=")
+    formats = history_mod.with_tool_results(history_mod.parse_line_formats())
+    # No bare value -> hidden tool results fall back to the default template.
+    assert formats["tool_result"] == "[{num}] {ts}{role}: {text}"
 
 
 def test_history_template_hides_types(monkeypatch, capsys):
@@ -337,6 +343,46 @@ def test_history_template_custom_name(monkeypatch, capsys):
     assert "ASSISTANT:" not in out
 
 
+def test_history_name_spec_custom_role_names(monkeypatch, capsys):
+    monkeypatch.setenv("LAMA_OLE_FORMAT", "name.user=You;name.assistant=Bot")
+    chat._cmd_history("", _state())
+    out = capsys.readouterr().out
+    assert "[1] You: hello" in out
+    assert "[2] Bot: hi there" in out
+    assert "[6] Bot: The answer is 4" in out
+    assert "USER:" not in out
+    assert "ASSISTANT:" not in out
+
+
+def test_history_name_spec_composes_toolcall_and_tool(monkeypatch, capsys):
+    monkeypatch.setenv("LAMA_OLE_FORMAT", "name.toolcall=Agent;name.tool=HANDLER")
+    chat._cmd_history("", _state())
+    out = capsys.readouterr().out
+    assert "[4] Agent HANDLER: [data from calculate: expression='2+2']" in out
+
+
+def test_history_name_spec_compacted(monkeypatch, capsys):
+    state = _state(messages=[
+        {"role": "user", "content": "SUMMARY", "compacted": True},
+        {"role": "user", "content": "recent"},
+    ])
+    monkeypatch.setenv("LAMA_OLE_FORMAT", "name.compacted=SUMMARY")
+    chat._cmd_history("", state)
+    out = capsys.readouterr().out
+    assert "[1] SUMMARY: SUMMARY" in out
+    assert "[2] USER: recent" in out
+
+
+def test_replay_name_spec_view_override(monkeypatch, capsys):
+    monkeypatch.setenv("LAMA_OLE_FORMAT", "name.user=You")
+    monkeypatch.setenv("LAMA_OLE_FORMAT_REPLAY", "name.user=Du")
+    state = _state(messages=[{"role": "user", "content": "hi"}])
+    chat._cmd_history("", state)
+    assert "[1] You: hi" in capsys.readouterr().out
+    chat._replay_history(state, use_color=False)
+    assert "[1] Du: hi" in capsys.readouterr().out
+
+
 def test_history_template_tool_tokens(monkeypatch, capsys):
     monkeypatch.setenv(
         "LAMA_OLE_FORMAT",
@@ -353,6 +399,15 @@ def test_history_invalid_template_falls_back(monkeypatch, capsys):
     chat._cmd_history("", _state())
     out, err = capsys.readouterr()
     # Invalid user template falls back to the default rendering.
+    assert "[1] USER: hello" in out
+    assert "Warning: invalid history template" in err
+
+
+def test_history_invalid_template_attribute_path_falls_back(monkeypatch, capsys):
+    # Attribute paths raise AttributeError in format_map, not KeyError.
+    monkeypatch.setenv("LAMA_OLE_FORMAT", "user={text.__nonexistent}")
+    chat._cmd_history("", _state())
+    out, err = capsys.readouterr()
     assert "[1] USER: hello" in out
     assert "Warning: invalid history template" in err
 
@@ -673,3 +728,45 @@ def test_replay_custom_names_via_template(monkeypatch, capsys):
     out = capsys.readouterr().out
     assert "[1] You: hi" in out
     assert "[2] Bot: hello" in out
+
+
+def test_stamp_turn_messages_stamps_all_new_messages():
+    msgs = [{"role": "user", "content": "hi"}, {"role": "assistant", "content": "yo"}]
+    state = _state(messages=msgs)
+    for m in state.messages:
+        assert "timestamp" not in m
+    chat.stamp_turn_messages(state, 0)
+    for m in state.messages:
+        assert "timestamp" in m
+
+
+def test_stamp_turn_messages_respects_start():
+    msgs = [{"role": "user", "content": "hi"}, {"role": "assistant", "content": "yo"}]
+    state = _state(messages=msgs)
+    chat.stamp_turn_messages(state, 1)
+    assert "timestamp" not in state.messages[0]
+    assert "timestamp" in state.messages[1]
+
+
+def test_replay_hides_diff_when_tool_result_hidden(monkeypatch, capsys):
+    state = _state(show_diff=True, messages=[
+        {"role": "user", "content": "hi"},
+        {"role": "tool", "content": "[data from edit_file]", "tool_name": "edit_file", "diff": "--- a\n+++ b\n+hi"},
+    ])
+    monkeypatch.setenv("LAMA_OLE_FORMAT", "tool_result=")
+    chat._replay_history(state, use_color=False)
+    out = capsys.readouterr().out
+    assert "TOOL:" not in out
+    assert "--- a" not in out
+
+
+def test_replay_shows_diff_when_tool_result_visible(monkeypatch, capsys):
+    state = _state(show_diff=True, messages=[
+        {"role": "user", "content": "hi"},
+        {"role": "tool", "content": "[data from edit_file]", "tool_name": "edit_file", "diff": "--- a\n+++ b\n+hi"},
+    ])
+    monkeypatch.setenv("LAMA_OLE_FORMAT", "tool_result=[{num}] {role}: {text}")
+    chat._replay_history(state, use_color=False)
+    out = capsys.readouterr().out
+    assert "TOOL: [data from edit_file]" in out
+    assert "--- a" in out

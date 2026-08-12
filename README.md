@@ -527,11 +527,17 @@ Each entry type has one template. A value is either a bare template applied to
 every visible type, or semicolon-separated `type=template` pairs. Types may be
 named by their canonical key or a role-name alias: `user`, `output`
 (alias `assistant`), `thinking`, `toolcall`, `tool_result` (alias `tool`),
-`compacted`. An empty template (`type=`) hides that entry type. Tokens:
+`compacted`. An empty template (`type=`) hides that entry type. The display
+names behind the `{role}` token are customized with `name.<role>=<label>`
+pairs (roles: `user`, `assistant`, `thinking`, `toolcall`, `tool`,
+`compacted`); a toolcall entry composes its name from `name.toolcall` +
+`name.tool` when it carries a summary. Tokens:
 
 - `{num}` — the entry number (`1` = oldest, `M` = newest)
 - `{ts}` — `[<time>] ` when the message carries a timestamp, else empty
-- `{role}` — the display name (`USER`, `ASSISTANT (TOOLCALL)`, `TOOL`, ...)
+- `{role}` — the display name (`USER`, `ASSISTANT (TOOLCALL)`, `TOOL`, ...);
+  override it with `name.<role>=<label>` rather than inlining labels into
+  every template
 - `{text}` — the message text (tool calls render as `[data from <name>: <args>]`)
 - `{tool}` / `{args}` — the tool name / arguments (tool entries only)
 
@@ -543,9 +549,14 @@ color mode is on; there is no per-line color setting. Examples:
 ```sh
 LAMA_OLE_FORMAT="[{num}] {ts}{role}: {text}"            # built-in default
 LAMA_OLE_FORMAT="user={num} You: {text};assistant={num} Bot: {text}"
+LAMA_OLE_FORMAT="name.user=You;name.assistant=Bot"       # custom names, default templates
 LAMA_OLE_FORMAT_HISTORY="user="                          # hide user lines in /history only
 LAMA_OLE_FORMAT="tool_result=[{num}] {tool} => {text}"   # always show tool responses
 ```
+
+`/history -t` forces tool results on for one listing: a hidden `tool_result`
+template is replaced by the effective bare template (so `-t` lines stay in the
+same style as the rest), or by the default template when no bare value is set.
 
 #### `/history`
 
@@ -795,7 +806,7 @@ the configured default.
  | `LAMA_OLE_COLOR_METER_LOW` | color spec | (config-only, no flag) |
  | `LAMA_OLE_COLOR_METER_MID` | color spec | (config-only, no flag) |
  | `LAMA_OLE_COLOR_METER_HIGH` | color spec | (config-only, no flag) |
-  | `LAMA_OLE_FORMAT` | line template | (config-only, no flag) — shared `/history` + replay line templates (see "History and cutting") |
+  | `LAMA_OLE_FORMAT` | line template | (config-only, no flag) — shared `/history` + replay line templates, incl. `name.<role>=<label>` name overrides (see "History and cutting") |
   | `LAMA_OLE_FORMAT_HISTORY` | line template | (config-only, no flag) — per-view override for `/history` |
   | `LAMA_OLE_FORMAT_REPLAY` | line template | (config-only, no flag) — per-view override for session replay |
 

@@ -38,6 +38,26 @@ def _load_cli_module():
 
 CLI = _load_cli_module()
 
+# Keep LAMA_OLE_FORMAT* out of this module's tests under both pytest and
+# `unittest discover`: history/replay rendering reads them at call time, so a
+# developer's shell exports would silently change the expected output. The
+# vars are saved before the module runs and restored afterwards.
+_FORMAT_ENV_VARS = ("LAMA_OLE_FORMAT", "LAMA_OLE_FORMAT_HISTORY", "LAMA_OLE_FORMAT_REPLAY")
+_FORMAT_ENV_BACKUP = {}
+
+
+def setUpModule():
+    global _FORMAT_ENV_BACKUP
+    _FORMAT_ENV_BACKUP = {v: os.environ[v] for v in _FORMAT_ENV_VARS if v in os.environ}
+    for v in _FORMAT_ENV_VARS:
+        os.environ.pop(v, None)
+
+
+def tearDownModule():
+    for v in _FORMAT_ENV_VARS:
+        os.environ.pop(v, None)
+    os.environ.update(_FORMAT_ENV_BACKUP)
+
 
 def _make_state(**kwargs):
     kwargs.setdefault("client", None)

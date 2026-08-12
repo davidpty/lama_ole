@@ -1129,6 +1129,7 @@ def run_chat(state: ChatState):
                 )
             finally:
                 state.stop_hotkey_listener()
+            stamp_turn_messages(state, messages_before)
             state.ctx_usage = metrics
             state.ctx_usage_model = state.model
             _accumulate_stats(state, metrics)
@@ -1465,6 +1466,18 @@ def _cmd_history(arg: str, state: ChatState):
                 found_any = True
     if not found_any:
         print("No history matches the criteria.")
+
+
+def stamp_turn_messages(state, start):
+    """Stamp every message a turn appended (assistant / tool / thinking).
+
+    Only the user's message is stamped at input time (see :meth:`stamp_message`),
+    so /history would otherwise render ``{ts}`` for user entries alone. This
+    pass runs after the turn completes so all new entries carry a timestamp,
+    matching session replay where restored messages are stamped on load.
+    """
+    for m in state.messages[start:]:
+        state.stamp_message(m)
 
 
 def _cmd_cut(arg: str, state: ChatState):
@@ -1882,13 +1895,15 @@ def _replay_history(state: ChatState, use_color: bool) -> None:
         text = history_mod.format_list_entry(entry, use_color, formats=formats)
         if text:
             print(text)
-        msg = entry["msg"]
-        if msg.get("role") == "tool" and state.show_diff and msg.get("diff"):
-            _print_diff_block(
-                msg.get("file") or msg.get("tool_name") or "?",
-                msg.get("diff") or "",
-                use_color,
-            )
+            # Stored edit diffs belong to the tool entry; keep them hidden
+            # when the entry itself is hidden by a template.
+            msg = entry["msg"]
+            if msg.get("role") == "tool" and state.show_diff and msg.get("diff"):
+                _print_diff_block(
+                    msg.get("file") or msg.get("tool_name") or "?",
+                    msg.get("diff") or "",
+                    use_color,
+                )
 
 
 def _resume_into_state(state: ChatState, path: str, data: dict) -> None:

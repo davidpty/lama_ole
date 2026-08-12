@@ -20,8 +20,11 @@ timestamp, else empty), ``{role}`` (the display name, always present),
 summary), ``{tool}`` and ``{args}`` (tool entries only). Types may be named
 by their canonical key or a role-name alias (``assistant`` -> ``output``,
 ``tool`` -> ``tool_result``). An empty template hides that entry type.
-Colors are applied per entry type whenever the global color mode is
-enabled; there is no per-line color setting.
+Display names can be customized with ``name.<role>=<label>`` pairs, which
+override what the ``{role}`` token expands to (roles: ``user``, ``assistant``,
+``thinking``, ``toolcall``, ``tool``, ``compacted``). Colors are applied per
+entry type whenever the global color mode is enabled; there is no per-line
+color setting.
 """
 
 import json
@@ -56,9 +59,28 @@ _DEFAULT_NAMES = {
     "thinking": "ASSISTANT (THOUGHT)",
     "toolcall": "ASSISTANT (TOOLCALL)",
     "tool": "TOOL",
+    "compacted": "COMPACTED",
 }
 
+_NAME_ROLES = tuple(_DEFAULT_NAMES)
+
 _WARNED_TEMPLATES = set()
+
+
+class LineFormats(dict):
+    """Resolved line templates plus the role names used by the ``{role}`` token.
+
+    Behaves like a plain ``{type: template}`` dict so callers and tests keep
+    indexing ``formats[...]``. The ``names`` attribute holds the per-role
+    display names and ``_bare`` remembers the effective bare-value template
+    (used by ``with_tool_results`` so ``/history -t`` keeps tool-result lines
+    in the same style as the rest).
+    """
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.names = dict(_DEFAULT_NAMES)
+        self._bare = None
 
 
 def classify_message(msg):
@@ -106,19 +128,19 @@ def history_entries(messages):
     return entries
 
 
-def parse_selectors(arg):
-    """Parse shared /history + /cut selectors into normalized ranges.
+def _parse_selectors(arg, cut_mode=False):
+    """Parse shared selector tokens into normalized ranges.
 
-    Accepted tokens (whitespace separated), all meaning the same thing in
-    ``/history`` and ``/cut``:
-
-      N     first N entries (numbers 1..N)
-      -N    last N entries (numbers V-N+1..V)
-      a..b  inclusive range; either bound may be negative (-1 = newest)
+    Accepted tokens (whitespace separated): ``N``, ``-N`` (last N entries,
+    ``a..b`` (inclusive; either bound may be negative, -1 = newest).
+    The two commands differ only in what a bare positive ``N`` means:
+    ``/history`` shows the first N entries (``(1, N)``) while ``/cut`` keeps
+    from entry N to the end (``(N, None)``) — that difference is the
+    ``cut_mode`` flag.
 
     Returns a list of ``(start, end)`` tuples; ``end`` is ``None`` for the
-    "-N" form (resolved against the entry count at selection time). Invalid
-    tokens (non-numeric, zero) are skipped.
+    bare-number forms (resolved against the entry count at selection time).
+    Invalid tokens (non-numeric, zero) are skipped.
     """
     ranges = []
     for token in arg.split():
@@ -143,45 +165,36 @@ def parse_selectors(arg):
             if val < 0:
                 ranges.append((-abs(val), None))
             else:
-                ranges.append((1, val))
+                ranges.append((val, None) if cut_mode else (1, val))
     return ranges
 
 
+def parse_selectors(arg):
+    """Parse /history selectors into normalized ranges (see :func:`_parse_selectors`).
+
+    ``/history N`` shows the first N entries; ``-N`` the last N; ``a..b`` an
+    inclusive range with negative bounds counting from the end (-1 = newest).
+    Returns a list of ``(start, end)`` tuples; ``end`` is ``None`` for the
+    "-N" form (resolved against the entry count at selection time). Invalid
+    tokens (non-numeric, zero) are skipped.
+    """
+    return _parse_selectors(arg, cut_mode=False)
+
+
 def parse_cut_selectors(arg):
-    """Parse /cut selectors into normalized ranges (see :func:`parse_selectors`).
+    """Parse /cut selectors into normalized ranges (see :func:`_parse_selectors`).
 
     ``/cut`` trims the conversation down to the entries it names, so a bare
     positive ``N`` selects entries ``N..end`` (the older ones are removed),
-    unlike ``/history`` where ``N`` means the first N entries. A bare
-    ``-N`` keeps the last N entries. Ranges (``a..b``) keep only the named
-    span; negative bounds count from the end (-1 = newest).
+    unlike ``/history`` where ``N`` means the first N entries. A bare ``-N``
+    keeps the last N entries. Ranges (``a..b``) keep only the named span;
+    negative bounds count from the end (-1 = newest).
 
     Returns a list of ``(start, end)`` tuples where ``end`` is ``None`` for
     the bare-number forms (resolved against the entry count at selection
     time). Invalid tokens (non-numeric, zero) are skipped.
     """
-    ranges = []
-    for token in arg.split():
-        if ".." in token:
-            parts = token.split("..")
-            if len(parts) != 2:
-                continue
-            try:
-                a, b = int(parts[0]), int(parts[1])
-            except ValueError:
-                continue
-            if a == 0 or b == 0:
-                continue
-            ranges.append((a, b))
-        else:
-            try:
-                val = int(token)
-            except ValueError:
-                continue
-            if val == 0:
-                continue
-            ranges.append((val, None))
-    return ranges
+    return _parse_selectors(arg, cut_mode=True)
 
 
 def resolve_selectors(selectors, count):
@@ -268,7 +281,9 @@ def _apply_format_spec(formats, spec):
     type; otherwise semicolon-separated ``type=template`` pairs override
     individual types. Types may be named by their canonical key or a
     role-name alias (``assistant`` -> ``output``, ``tool`` ->
-    ``tool_result``). An empty template (``type=``) hides that type.
+    ``tool_result``). ``name.<role>=<label>`` pairs override the display
+    names the ``{role}`` token expands to. An empty template (``type=``)
+    hides that type.
     """
     if not spec:
         return
@@ -278,13 +293,20 @@ def _apply_format_spec(formats, spec):
     if "=" not in spec:
         for t in _VISIBLE_TYPES:
             formats[t] = spec
+        formats._bare = spec
         return
     for pair in spec.split(";"):
         pair = pair.strip()
         if not pair or "=" not in pair:
             continue
         key, _, value = pair.partition("=")
-        etype = _TYPE_ALIASES.get(key.strip())
+        key = key.strip()
+        if key.startswith("name."):
+            role = key[len("name."):]
+            if role in _NAME_ROLES:
+                formats.names[role] = value.strip()
+            continue
+        etype = _TYPE_ALIASES.get(key)
         if etype is not None:
             formats[etype] = value.strip()
 
@@ -297,17 +319,18 @@ _VIEW_ENV = {
 
 
 def parse_line_formats(view="base"):
-    """Resolve line templates for a view into a ``{type: template}`` dict.
+    """Resolve line templates for a view into a :class:`LineFormats` dict.
 
     The shared ``LAMA_OLE_FORMAT`` variable applies to both /history and
     session replay; ``LAMA_OLE_FORMAT_HISTORY`` and ``LAMA_OLE_FORMAT_REPLAY``
     override it per view (``view`` is ``"history"`` or ``"replay"``; the
     default ``"base"`` reads only the shared variable). Overrides merge per
-    entry type, so a view var only changes the types it names. Unset types
-    keep the built-in default ``[{num}] {ts}{role}: {text}``; ``tool_result``
-    stays hidden (empty template) unless a var names it.
+    entry type (and per role name), so a view var only changes the types and
+    names it mentions. Unset types keep the built-in default
+    ``[{num}] {ts}{role}: {text}``; ``tool_result`` stays hidden (empty
+    template) unless a var names it.
     """
-    formats = dict(_DEFAULT_FORMATS)
+    formats = LineFormats(_DEFAULT_FORMATS)
     _apply_format_spec(formats, os.environ.get(_VIEW_ENV["base"]))
     if view != "base":
         varname = _VIEW_ENV.get(view)
@@ -316,15 +339,24 @@ def parse_line_formats(view="base"):
     return formats
 
 
+def _clone_line_formats(formats):
+    """Copy a LineFormats (or plain dict) preserving names and the bare template."""
+    out = LineFormats(formats)
+    out.names = dict(getattr(formats, "names", _DEFAULT_NAMES))
+    out._bare = getattr(formats, "_bare", None)
+    return out
+
+
 def with_tool_results(formats):
     """Return ``formats`` with tool results made visible.
 
     Used by ``/history -t``: a hidden ``tool_result`` template is replaced by
-    the default one so results render for that command only.
+    the effective bare-value template (so the results match the rest of the
+    listing), falling back to the default one otherwise.
     """
-    out = dict(formats)
+    out = _clone_line_formats(formats)
     if not out.get("tool_result"):
-        out["tool_result"] = _DEFAULT_TEMPLATE
+        out["tool_result"] = out._bare or _DEFAULT_TEMPLATE
     return out
 
 
@@ -332,7 +364,7 @@ def _render_template(template, tokens):
     fallback = _DEFAULT_TEMPLATE
     try:
         return template.format_map(tokens)
-    except (KeyError, ValueError, IndexError) as e:
+    except (AttributeError, KeyError, TypeError, ValueError, IndexError) as e:
         if template not in _WARNED_TEMPLATES:
             _WARNED_TEMPLATES.add(template)
             print(
@@ -391,7 +423,7 @@ def format_list_entry(entry, use_color=True, formats=None):
     if not template:
         return None
 
-    names = _DEFAULT_NAMES
+    names = getattr(formats, "names", _DEFAULT_NAMES)
     num = str(entry["num"])
     ts = f"[{msg['timestamp']}] " if msg.get("timestamp") else ""
     tool, args = "", ""
@@ -417,7 +449,7 @@ def format_list_entry(entry, use_color=True, formats=None):
         text = _text(content)
         tool = msg.get("tool_name") or ""
     elif etype == "compacted":
-        role_token = "COMPACTED"
+        role_token = names.get("compacted", "COMPACTED")
         text = (content or "").strip() or "[compacted context]"
     else:
         role_token = names.get(role, etype)
