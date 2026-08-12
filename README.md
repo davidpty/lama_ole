@@ -343,7 +343,8 @@ In chat mode (`--chat`), lines starting with `/` are commands:
 | `/save <path>` | Save the conversation to a JSON file (model, messages, active skill, system prompt and loaded toolsets) |
 | `/load <path>` | Load a conversation from a JSON file (restores the active skill, system prompt and re-loads toolsets) |
 | `/resume [match]` | Resume a saved session; without an argument it lists sessions and prompts, with a session-id or title substring it loads directly |
-| `/sessions` | List all saved sessions |
+| `/sessions [all]` | List sessions in the current directory (1 = oldest, newest shown first); `all` includes every project. `rm` subcommand deletes session files |
+| `/sessions rm <N \| -N \| a..b \| all>` | Delete session file(s) by number (`N` = exactly session N, `-N` = the N most recent, `a..b` = an inclusive range, `all` = everything), space-separated selectors allowed; always asks for confirmation |
 | `/stats` | Show the current model, the last turn's per-round breakdown (time, tokens, tok/s), and session averages per model |
 | `/rename <new title>` | Rename the current session (persists across autosaves) |
 | `/rename <id-prefix> <new title>` | Rename a stored session by session-id prefix |
@@ -488,8 +489,17 @@ and `/load`.
   `/resume` and `/sessions` still work for manual recovery either way.
 * **Renames/moves**: if a project directory is renamed, its sessions no
   longer match the new path automatically. Run `/resume` — sessions recorded
-  elsewhere are listed (marked `[moved]`) and resuming one re-associates it
-  to the current directory.
+  elsewhere are listed under "Other projects" and resuming one re-associates
+  it to the current directory.
+* **Listing**: `/sessions` lists the current directory's sessions only;
+  `/sessions all` shows every project, grouped by its recorded cwd. Sessions
+  are numbered like `/history` (1 = oldest, highest = newest) but displayed
+  newest first, so the newest session always sits on top. `*` marks the active
+  session, and the footer prints the sessions directory plus the active
+  session's file path. Bare `/sessions rm` prints the full listing and prompts;
+  with a selection it deletes the matching file(s) after a `y/N` confirmation
+  (the numbers are a positional alias — the session-id is the stable identity
+  for `/resume` and `/rename`).
 * **`/new`**: archives the current session (leaving it restorable) and
   starts a fresh one.
 * **`/stats`**: shows the current model, the last turn's per-round breakdown

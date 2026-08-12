@@ -1268,7 +1268,8 @@ def _show_help():
     print("  /save <path>    Save the conversation to a JSON file")
     print("  /load <path>    Load a conversation from a JSON file")
     print("  /resume [id|title]  Resume a saved session (with no arg: picker; with a match: direct)")
-    print("  /sessions       List all saved sessions")
+    print("  /sessions [all]  List saved sessions in this directory (1 = oldest, newest shown first);")
+    print("                  'all' includes every project; /sessions rm deletes (N | -N | a..b | all)")
     print("  /stats          Show model, last turn's per-round breakdown, and session averages")
     print("  /rename <new title>  Rename the current session")
     print("  /rename <id-prefix> <new title>  Rename a stored session")
@@ -1853,32 +1854,91 @@ def _list_session_files(sessions_dir: str) -> list:
     return results
 
 
-def _collect_sessions(state: ChatState):
-    """Return (current_dir_sessions, other_sessions), each recency-sorted.
+def _session_age(data: dict) -> float:
+    """Recency timestamp for a session dict (updated_at preferred)."""
+    return data.get("updated_at") or data.get("created_at") or 0
 
-    Sessions whose recorded cwd matches the current directory are "current";
-    everything else is listed separately so renamed/moved projects remain
-    recoverable via the /resume picker.
+
+def _collect_session_groups(state: ChatState, all_projects: bool = False) -> list:
+    """Return [(label, [(num, path, data), ...]), ...] for the sessions listing.
+
+    Sessions are numbered 1 (oldest) .. V (newest) within each group, mirroring
+    /history. The current-cwd group comes first so its numbers are identical in
+    the bare and the 'all' listing; other projects follow, grouped by their
+    recorded cwd. Callers display each group newest-first (numbers travel with
+    their entries).
     """
-    sessions = _list_session_files(state.sessions_dir)
     current = os.path.normpath(os.getcwd())
-    cur = [pd for pd in sessions if os.path.normpath(pd[1].get("cwd") or "") == current]
-    other = [pd for pd in sessions if os.path.normpath(pd[1].get("cwd") or "") != current]
-    key = lambda pd: pd[1].get("updated_at") or pd[1].get("created_at") or 0
-    cur.sort(key=key, reverse=True)
-    other.sort(key=key, reverse=True)
-    return cur, other
+    sessions = _list_session_files(state.sessions_dir)
+    cur = [
+        pd for pd in sessions
+        if os.path.normpath(pd[1].get("cwd") or "") == current
+    ]
+    groups = [("current", cur)]
+    if all_projects:
+        others = [
+            pd for pd in sessions
+            if os.path.normpath(pd[1].get("cwd") or "") != current
+        ]
+        by_cwd = {}
+        for pd in others:
+            key = os.path.normpath(pd[1].get("cwd") or "?")
+            by_cwd.setdefault(key, []).append(pd)
+        for cwd in sorted(by_cwd):
+            groups.append((cwd, by_cwd[cwd]))
+    num = 0
+    result = []
+    for label, items in groups:
+        numbered = []
+        for path, data in sorted(items, key=lambda pd: _session_age(pd[1])):
+            num += 1
+            numbered.append((num, path, data))
+        result.append((label, numbered))
+    return result
 
 
-def _print_session(index: int, data: dict, current: bool = True) -> None:
+def _print_session(num: int, data: dict, current_sid: str = None) -> None:
     sid = (data.get("session_id") or "?")[:8]
     title = data.get("title") or "(untitled)"
     model = data.get("model") or "?"
-    updated = data.get("updated_at") or data.get("created_at") or 0
+    updated = _session_age(data)
     ts = time.strftime("%Y-%m-%d %H:%M", time.localtime(updated))
     n = sum(1 for m in data.get("messages", []) if m.get("role") != "system")
-    marker = "" if current else " [moved]"
-    print(f"  {index}. [{ts}] {title}  ({model}, {n} msgs, {sid}){marker}")
+    marker = "*" if current_sid and data.get("session_id") == current_sid else " "
+    print(f"{marker} {num}. [{ts}] {title}  ({model}, {n} msgs, {sid})")
+
+
+def _display_session_groups(groups: list, current_sid: str = None) -> None:
+    """Print session groups newest-first, with project headers."""
+    first_other = True
+    for label, items in groups:
+        if not items:
+            continue
+        if label == "current":
+            print(f"Sessions in {os.getcwd()} (newest first):")
+        else:
+            if first_other:
+                print()
+                print("Other projects:")
+                first_other = False
+            print(f"  {label}:")
+        for num, path, data in reversed(items):
+            _print_session(num, data, current_sid)
+
+
+def _print_sessions_footer(groups: list, state: ChatState) -> None:
+    """Print the count summary and the active session's file path."""
+    total = sum(len(items) for _label, items in groups)
+    if not total:
+        return
+    print()
+    print(f"{total} session(s) stored in {state.sessions_dir}")
+    if state.session_id:
+        for _label, items in groups:
+            for _num, path, data in items:
+                if data.get("session_id") == state.session_id:
+                    print("current session file: " + os.path.relpath(path, state.sessions_dir))
+                    return
 
 
 def _replay_history(state: ChatState, use_color: bool) -> None:
@@ -1952,19 +2012,15 @@ def _cmd_resume(arg: str, state: ChatState):
         _resume_into_state(state, cands[0][0], cands[0][1])
         return
 
-    cur, other = _collect_sessions(state)
-    all_items = cur + other
-    if not all_items:
+    groups = _collect_session_groups(state, all_projects=True)
+    ordered = []
+    for _label, items in groups:
+        ordered.extend(items)
+    if not ordered:
         print("No saved sessions to resume.")
         return
-    index = 0
-    for path, data in cur:
-        index += 1
-        _print_session(index, data, current=True)
-    for path, data in other:
-        index += 1
-        _print_session(index, data, current=False)
-    choice = input(f"Select session (1-{index}) or Enter to cancel: ").strip()
+    _display_session_groups(groups, current_sid=state.session_id)
+    choice = input(f"Select session (1-{len(ordered)}) or Enter to cancel: ").strip()
     if not choice:
         print("Cancelled.")
         return
@@ -1972,28 +2028,133 @@ def _cmd_resume(arg: str, state: ChatState):
         print("Invalid selection.")
         return
     n = int(choice)
-    if not (1 <= n <= index):
+    if not (1 <= n <= len(ordered)):
         print("Invalid selection.")
         return
-    _resume_into_state(state, all_items[n - 1][0], all_items[n - 1][1])
+    _resume_into_state(state, ordered[n - 1][1], ordered[n - 1][2])
 
 
 def _cmd_sessions(arg: str, state: ChatState):
     if not state.sessions_dir:
         print("Sessions directory is not configured.")
         return
-    cur, other = _collect_sessions(state)
-    if not cur and not other:
+    arg = arg.strip().lower()
+    if arg == "rm" or arg.startswith("rm "):
+        _cmd_sessions_rm(arg[2:].strip(), state)
+        return
+    if arg and arg not in ("all", "-a", "--all"):
+        print("Usage: /sessions [all]  |  /sessions rm <N | -N | a..b | all>")
+        return
+    groups = _collect_session_groups(state, all_projects=bool(arg))
+    if not any(items for _label, items in groups):
         print("No saved sessions.")
         return
-    index = 0
-    for path, data in cur:
-        index += 1
-        _print_session(index, data, current=True)
-    for path, data in other:
-        index += 1
-        _print_session(index, data, current=False)
-    print(f"\n{index} session(s) stored in {state.sessions_dir}")
+    _display_session_groups(groups, current_sid=state.session_id)
+    _print_sessions_footer(groups, state)
+
+
+def _parse_rm_selectors(arg: str) -> list:
+    """Parse /sessions rm selectors into (start, end) inclusive spans.
+
+    Mirrors the /cut grammar: ``N`` (exactly session N), ``-N`` (the N most
+    recent sessions), ``a..b`` (inclusive range; negative bounds count from the
+    newest), any space-separated combination. Invalid tokens are skipped.
+    """
+    ranges = []
+    for token in arg.split():
+        if ".." in token:
+            parts = token.split("..")
+            if len(parts) != 2:
+                continue
+            try:
+                a, b = int(parts[0]), int(parts[1])
+            except ValueError:
+                continue
+            if a == 0 or b == 0:
+                continue
+            ranges.append((a, b))
+        else:
+            try:
+                val = int(token)
+            except ValueError:
+                continue
+            if val == 0:
+                continue
+            if val < 0:
+                ranges.append((-abs(val), -1))
+            else:
+                ranges.append((val, val))
+    return ranges
+
+
+def _resolve_rm_selectors(selectors: list, count: int) -> list:
+    """Resolve rm selector spans against the session count (1 = oldest).
+
+    Negative bounds count from the newest session (-1 = newest). Returns the
+    sorted, de-duplicated, in-range session numbers to delete.
+    """
+    chosen = set()
+    for a, b in selectors:
+        if a < 0:
+            a = count + a + 1
+        if b < 0:
+            b = count + b + 1
+        lo, hi = sorted((a, b))
+        for n in range(lo, hi + 1):
+            if 1 <= n <= count:
+                chosen.add(n)
+    return sorted(chosen)
+
+
+def _cmd_sessions_rm(arg: str, state: ChatState):
+    if not state.sessions_dir:
+        print("Sessions directory is not configured.")
+        return
+    groups = _collect_session_groups(state, all_projects=True)
+    ordered = []
+    for _label, items in groups:
+        ordered.extend(items)
+    if not ordered:
+        print("No saved sessions.")
+        return
+    if not arg:
+        _display_session_groups(groups, current_sid=state.session_id)
+        print()
+        choice = input(
+            "Delete which session(s)? (e.g. 2, 4..6, all, or Enter to cancel): "
+        ).strip()
+        if not choice:
+            print("Cancelled.")
+            return
+        arg = choice
+    if arg.strip().lower() == "all":
+        chosen = list(range(1, len(ordered) + 1))
+    else:
+        selectors = _parse_rm_selectors(arg)
+        if not selectors:
+            print("Usage: /sessions rm <N | -N | a..b | all>  (space-separated selectors allowed)")
+            return
+        chosen = _resolve_rm_selectors(selectors, len(ordered))
+    if not chosen:
+        print("No sessions match that selection.")
+        return
+    targets = [(num, path, data) for num, path, data in ordered if num in chosen]
+    print("Delete these session file(s)?")
+    for num, path, _data in targets:
+        print(f"  {num}. {os.path.relpath(path, state.sessions_dir)}")
+    confirm = input("Type 'y' to delete, anything else to cancel: ").strip().lower()
+    if confirm != "y":
+        print("Cancelled.")
+        return
+    removed = 0
+    for _num, path, _data in targets:
+        try:
+            os.remove(path)
+            print(f"removed {os.path.relpath(path, state.sessions_dir)}")
+            removed += 1
+        except OSError as e:
+            print(f"Error removing {path}: {e}", file=sys.stderr)
+    print(f"Deleted {removed} session(s).")
 
 
 def _cmd_rename(arg: str, state: ChatState):
