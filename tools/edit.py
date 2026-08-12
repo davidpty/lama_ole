@@ -323,6 +323,126 @@ def edit_range_based_file2( path2edit: str, path2grep: str, pe_search_from1: str
     except Exception as e:
         return {"status": "error", "message": ["Error applying patch:", str(e)]}
 
+# /home/ox/aitasks/2026_08_12_12_tool_explanation/code.py
+
+@tool(description="""provides documentation for the tool edit_range_based_file3""")
+def edit_range_based_file3_help() : 
+    return { "status": "success", "data" :
+    """
+    Wrapper around edit_range_based_file2 that uses a separator to mark the split point.
+
+    Instead of providing two separate parts (X1 and X2) for each search parameter,
+    you provide a single string with a separator (default '|') that marks where the
+    range starts or ends. The full search string is the concatenation of the parts
+    around the separator.
+
+    For example:
+        pe_search_from="ab|c" means the full search string is "abc" and the split
+        point is between "ab" and "c". The range starts at the position of "c".
+
+        pe_search_to="XYZ|after" means the full search string is "XYZafter" and the
+        split point is between "XYZ" and "after". The range ends at the position of "after".
+
+    If no separator is present, the entire string is used as X1 and X2 is treated as None
+    (empty string), meaning the split point is at the end of the string.
+
+    Parameters:
+        path2edit: Path to the file to edit.
+        path2grep: Path to the file to read replacement content from.
+        pe_search_from: Marker in path2edit where the range starts, with optional separator.
+            e.g., "abc" (split at end) or "ab|c" (split between "ab" and "c").
+        pe_search_to: Marker in path2edit where the range ends, with optional separator.
+            e.g., "xyz" (split at end) or "xy|z" (split between "xy" and "z").
+        pg_search_from: Marker in path2grep where the source range starts, with optional separator.
+        pg_search_to: Marker in path2grep where the source range ends, with optional separator.
+        sep: The separator character that marks the split point. Default is '|'.
+
+    Returns:
+        Result string from edit_range_based_file2.
+
+    Examples:
+        # Replace content between [START] and [END] markers
+        edit_range_based_file3(
+            path2edit="target.txt",
+            path2grep="source.txt",
+            pe_search_from="[START]",
+            pe_search_to="[END]",
+            pg_search_from="[SRC_START]",
+            pg_search_to="[SRC_END]"
+        )
+
+        # Replace content from after "ab" to after "XYZ"
+        edit_range_based_file3(
+            path2edit="target.txt",
+            path2grep="source.txt",
+            pe_search_from="ab|c",
+            pe_search_to="XYZ|after",
+            pg_search_from="de|f",
+            pg_search_to="GHI|after"
+        )
+    """ }
+
+@tool( """Wrapper around edit_range_based_file2 that uses a separator to mark the split point. edit_range_based_file3_help() provides the documentation.""")
+def edit_range_based_file3(
+    path2edit: str,
+    path2grep: str,
+    pe_search_from: str = None,
+    pe_search_to: str = None,
+    pg_search_from: str = None,
+    pg_search_to: str = None,
+    sep: str = '|'
+) -> str:
+
+    """
+    Wrapper around edit_range_based_file2 that uses a separator to mark the split point.
+
+    Instead of providing two separate parts (X1 and X2) for each search parameter,
+    you provide a single string with a separator (default '|') that marks where the
+    range starts or ends. The full search string is the concatenation of the parts
+    around the separator.
+    """
+
+    if not isinstance( sep, str):
+        return {"status": "error", "message": ["sep has to be a string"]}
+
+    if len( sep) == 0 :
+        return {"status": "error", "message": ["sep must be at least 1 character long"]}
+
+    for paramname in "pe_search_from,pe_search_to,pg_search_from,pg_search_to".split( ','):
+        if not eval( paramname).count( sep) in [0,1] :
+            return {"status": "error", "message": [f"parameter sep {sep} must match exactly 0 or 1 times in parameter {paramname}"]}
+
+
+    def split_param(param, sep):
+        """Split a parameter into two parts based on the separator."""
+        if param is None:
+            return None, None
+        if sep in param:
+            idx = param.index(sep)
+            return param[:idx], param[idx + 1:]
+        else:
+            # No separator: entire string is X1, X2 is None (treated as empty)
+            return param, None
+
+    pe_from1, pe_from2 = split_param(pe_search_from, sep)
+    pe_to1, pe_to2 = split_param(pe_search_to, sep)
+    pg_from1, pg_from2 = split_param(pg_search_from, sep)
+    pg_to1, pg_to2 = split_param(pg_search_to, sep)
+
+    ### TODO : the error messages do not really match the parameters in this function
+    return edit_range_based_file2(
+        path2edit=path2edit,
+        path2grep=path2grep,
+        pe_search_from1=pe_from1,
+        pe_search_from2=pe_from2,
+        pe_search_to1=pe_to1,
+        pe_search_to2=pe_to2,
+        pg_search_from1=pg_from1,
+        pg_search_from2=pg_from2,
+        pg_search_to1=pg_to1,
+        pg_search_to2=pg_to2
+    )
+
 @tool(description="Creates a new file with the specified content at the given path. Fails if the file already exists.")
 def create_new_file(path: str, content: str):
     # 1. Safety Check
