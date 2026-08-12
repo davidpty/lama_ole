@@ -102,28 +102,29 @@ class SessionSerializeTest(unittest.TestCase):
         out = buf.getvalue()
         self.assertNotIn("secret system prompt", out)
         self.assertNotIn("inner monologue", out)
-        self.assertIn(">>> hi\n", out)
-        self.assertIn("hello there\n", out)
-        self.assertIn("it is sunny\n", out)
         self.assertNotIn("[tool:", out)
         self.assertNotIn("[tool result:", out)
+        # Replay is a numbered /history listing (tool result hidden by default).
+        self.assertIn("[1] USER: hi\n", out)
+        self.assertIn("[2] ASSISTANT: hello there", out)
+        self.assertIn("[3] ASSISTANT (TOOLCALL) TOOL: [data from get_weather", out)
+        self.assertIn("[5] ASSISTANT: it is sunny", out)
 
-    def test_replay_history_shows_thinking_when_enabled(self):
-        state = _make_state(show_thinking=True)
+    def test_replay_history_shows_stored_thinking(self):
+        state = _make_state()
         state.messages = [
             {"role": "user", "content": "hi"},
-            {"role": "assistant", "content": "answer", "thinking": "hmm"},
+            {"role": "assistant", "content": {"thinking": "hmm"}},
         ]
         buf = io.StringIO()
         with contextlib.redirect_stdout(buf):
             chat._replay_history(state, use_color=True)
         out = buf.getvalue()
-        self.assertIn("hmm", out)
-        self.assertIn("answer", out)
+        self.assertIn("ASSISTANT (THOUGHT): hmm", out)
         self.assertIn("\x01\033[", out)
 
-    def test_replay_history_verbose_shows_tool_markers(self):
-        state = _make_state(verbose=1)
+    def test_replay_history_tool_entries_via_template(self):
+        state = _make_state()
         state.messages = [
             {
                 "role": "assistant",
@@ -134,12 +135,18 @@ class SessionSerializeTest(unittest.TestCase):
             },
             {"role": "tool", "content": "[data from ...]", "tool_name": "get_weather"},
         ]
-        buf = io.StringIO()
-        with contextlib.redirect_stdout(buf):
-            chat._replay_history(state, use_color=False)
+        env = {
+            "LAMA_OLE_FORMAT": "tool_result=[{num}] {role}: {text}",
+            "LAMA_OLE_FORMAT_HISTORY": "",
+            "LAMA_OLE_FORMAT_REPLAY": "",
+        }
+        with patch.dict(os.environ, env):
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                chat._replay_history(state, use_color=False)
         out = buf.getvalue()
-        self.assertIn("[tool: get_weather(city='Berlin')]", out)
-        self.assertIn("[tool result: get_weather]", out)
+        self.assertIn("[1] ASSISTANT (TOOLCALL) TOOL: [data from get_weather", out)
+        self.assertIn("[2] TOOL: [data from ...]", out)
 
     def test_replay_history_colored(self):
         state = _make_state()
@@ -177,7 +184,10 @@ class SessionSerializeTest(unittest.TestCase):
     def test_apply_session_ignores_unknown_keys(self):
         state = _make_state()
         chat.apply_session(state, {"messages": [{"role": "user", "content": "hi"}], "future": 1})
-        self.assertEqual(state.messages, [{"role": "user", "content": "hi"}])
+        self.assertEqual([m["role"] for m in state.messages], ["user"])
+        self.assertEqual(state.messages[0]["content"], "hi")
+        # Restored messages are stamped so /history renders uniformly.
+        self.assertIn("timestamp", state.messages[0])
 
     def test_round_trip(self):
         state = _make_state()
@@ -195,7 +205,12 @@ class SessionSerializeTest(unittest.TestCase):
         self.assertEqual(state2.system_prompt, "SP")
         self.assertEqual(state2.session_id, "abc")
         self.assertEqual(state2.session_created_at, 1.0)
-        self.assertEqual(state2.messages, state.messages)
+        # Restored messages are stamped; roles and contents are unchanged.
+        self.assertEqual(
+            [(m["role"], m["content"]) for m in state2.messages],
+            [(m["role"], m["content"]) for m in state.messages],
+        )
+        self.assertTrue(all("timestamp" in m for m in state2.messages))
 
     def test_round_trip_preserves_thinking(self):
         state = _make_state()
@@ -301,7 +316,7 @@ class SessionStoreTest(unittest.TestCase):
         state2 = _make_state(sessions_dir=self.sessions_dir)
         chat._cmd_resume("s1", state2)
         self.assertEqual(state2.session_id, "s1")
-        self.assertEqual(state2.messages, [{"role": "user", "content": "hi"}])
+        self.assertEqual([(m["role"], m["content"]) for m in state2.messages], [("user", "hi")])
         self.assertTrue(os.path.isfile(self._session_path("s1")))
         self.assertFalse(os.path.exists(old_path))
 
@@ -520,6 +535,79 @@ class SessionsDirTest(unittest.TestCase):
                 os.environ.pop("LAMA_OLE_AUTOSAVE", None)
             else:
                 os.environ["LAMA_OLE_AUTOSAVE"] = old_a
+
+
+class MutationPersistenceTest(unittest.TestCase):
+    """Every history/config mutation must persist to the session file at once.
+
+    This keeps the on-disk session and the live ``state.messages`` from
+    diverging (history editing and session persistence stay homogenized).
+    """
+
+    def setUp(self):
+        self._tmp = tempfile.mkdtemp()
+        self._cwd = os.getcwd()
+        os.chdir(self._tmp)
+        self.sessions_dir = os.path.join(self._tmp, "sessions")
+
+    def tearDown(self):
+        os.chdir(self._cwd)
+        shutil.rmtree(self._tmp, ignore_errors=True)
+
+    def _state(self, **kwargs):
+        kwargs.setdefault("client", None)
+        kwargs.setdefault("model", "m")
+        kwargs.setdefault("sessions_dir", self.sessions_dir)
+        kwargs.setdefault("session_id", "s1")
+        return chat.ChatState(**kwargs)
+
+    def _path(self):
+        return os.path.join(chat.session_dir_for(os.getcwd(), self.sessions_dir), "s1.json")
+
+    def _data(self):
+        with open(self._path(), encoding="utf-8") as f:
+            return json.load(f)
+
+    def test_cut_persists_immediately(self):
+        state = self._state()
+        state.messages = [
+            {"role": "user", "content": "keep me"},
+            {"role": "user", "content": "drop me"},
+        ]
+        chat.autosave_session(state)
+        # /cut keeps from entry 2 to the end -> the older "keep me" is removed.
+        chat._cmd_cut("2", state)
+        self.assertEqual(
+            [m["content"] for m in self._data()["messages"]], ["drop me"]
+        )
+
+    def test_cut_undo_persists(self):
+        state = self._state()
+        state.messages = [{"role": "user", "content": "a"}, {"role": "user", "content": "b"}]
+        chat._cmd_cut("2", state)
+        chat._cmd_cut("undo", state)
+        self.assertEqual(
+            [m["content"] for m in self._data()["messages"]], ["a", "b"]
+        )
+
+    def test_model_switch_persists(self):
+        state = self._state()
+        state.messages = [{"role": "user", "content": "hi"}]
+        chat.autosave_session(state)
+        chat._handle_command("/model other-model", state)
+        self.assertEqual(self._data()["model"], "other-model")
+
+    def test_systemprompt_persists(self):
+        state = self._state()
+        state.messages = [{"role": "user", "content": "hi"}]
+        chat.autosave_session(state)
+        sp_file = os.path.join(self._tmp, "prompt.txt")
+        with open(sp_file, "w", encoding="utf-8") as f:
+            f.write("you are a terse assistant")
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            chat._cmd_systemprompt(sp_file, state)
+        self.assertEqual(self._data()["system_prompt"], "you are a terse assistant")
 
 
 if __name__ == "__main__":

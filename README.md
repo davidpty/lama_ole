@@ -362,7 +362,7 @@ In chat mode (`--chat`), lines starting with `/` are commands:
 | `/systemprompt unset` | Unset the system prompt (back to default) |
 | `/context` | Show context usage (tokens/window/percentage + breakdown), or `/context on` / `/context off` to toggle the meter |
 | `/history [<selector> ...]` | Show conversation history entries with numbers (see below) |
-| `/cut <N> \| <a..b> \| undo` | Remove entries from the conversation history (see below) |
+| `/cut <N> \| <a..b> \| undo` | Trim the conversation history to a selection (see below) |
 | `/help` | Show this help message |
 | `/exit`, `/quit` | Exit the chat |
 
@@ -475,11 +475,11 @@ and `/load`.
   stored inside the file.
 * **Auto-resume**: starting `--chat` restores the most recent session for the
   current directory and prints a notice. The restored conversation is then
-  replayed (user prompts and assistant replies, in their original colors) so
-  it reads like you never left; thinking captured with `-t` is replayed only
-  when `-t` is on, and tool call/result markers only in verbose mode — both
-  matching their live visibility. If the session model differs
-  from the CLI `-m`, you are asked which to keep (session / CLI / abort).
+  replayed as a numbered listing that looks exactly like `/history` — the same
+  `[N] [ts]` prefixes, role labels and colors (the two views share the
+  `LAMA_OLE_FORMAT` line templates; see "History and cutting"). If the
+  session model differs from the CLI `-m`, you are asked which to keep
+  (session / CLI / abort).
   `/resume` and `/load` replay the history the same way.
 * **Opt out**: the two behaviors are independent toggles, both on by default:
   * `--no-resume` (or `LAMA_OLE_RESUME=false`) disables auto-loading.
@@ -508,10 +508,44 @@ and `/load`.
 
 ### History and cutting
 
-Every conversation message is numbered from **M** (oldest) down to **1**
+Every conversation message is numbered from **1** (oldest) up to **M**
 (newest), where M is the total number of messages — the same numbering used by
 `/history` and `/cut`. System messages are hidden from `/history` and are never
 removed by `/cut`.
+
+A resumed session is replayed as a numbered listing that looks exactly like
+`/history` (same prefixes, labels and colors), so the two views never diverge.
+How lines are rendered is driven by **line templates** set through environment
+variables:
+
+- `LAMA_OLE_FORMAT` — the shared base, applied to both `/history` and session
+  replay.
+- `LAMA_OLE_FORMAT_HISTORY` and `LAMA_OLE_FORMAT_REPLAY` — per-view overrides
+  that only change the entry types they name.
+
+Each entry type has one template. A value is either a bare template applied to
+every visible type, or semicolon-separated `type=template` pairs. Types may be
+named by their canonical key or a role-name alias: `user`, `output`
+(alias `assistant`), `thinking`, `toolcall`, `tool_result` (alias `tool`),
+`compacted`. An empty template (`type=`) hides that entry type. Tokens:
+
+- `{num}` — the entry number (`1` = oldest, `M` = newest)
+- `{ts}` — `[<time>] ` when the message carries a timestamp, else empty
+- `{role}` — the display name (`USER`, `ASSISTANT (TOOLCALL)`, `TOOL`, ...)
+- `{text}` — the message text (tool calls render as `[data from <name>: <args>]`)
+- `{tool}` / `{args}` — the tool name / arguments (tool entries only)
+
+The default is `[{num}] {ts}{role}: {text}` for all visible types and an empty
+template for `tool_result` (hidden). An invalid template falls back to the
+default and prints a warning once. Colors are applied per entry type whenever
+color mode is on; there is no per-line color setting. Examples:
+
+```sh
+LAMA_OLE_FORMAT="[{num}] {ts}{role}: {text}"            # built-in default
+LAMA_OLE_FORMAT="user={num} You: {text};assistant={num} Bot: {text}"
+LAMA_OLE_FORMAT_HISTORY="user="                          # hide user lines in /history only
+LAMA_OLE_FORMAT="tool_result=[{num}] {tool} => {text}"   # always show tool responses
+```
 
 #### `/history`
 
@@ -523,12 +557,12 @@ Every entry is prefixed with the time the event happened, e.g.
 `[7] [2026-08-09 09:01:00] USER: ...`. Tool calls show the concrete function
 name and arguments (`TOOL: [data from read_file: path='lama_ole/AGENTS.md']`),
 not just an empty `ASSISTANT (TOOLCALL)` marker; the full tool response data
-still requires `-t`.
+still requires `-t` (or a `tool_result` line template in `LAMA_OLE_FORMAT*`).
 
 | Command | Shows |
 |---------|-------|
-| `/history` | all entries (output, thinking, tool calls) |
-| `/history -t` | all entries including tool responses |
+| `/history` | all entry types with a non-empty template |
+| `/history -t` | all entry types including tool responses |
 | `/history -10` | the last 10 entries |
 | `/history 10` | the first 10 entries |
 | `/history 10 -10` | the first 10 and the last 10 entries |
@@ -539,20 +573,23 @@ Ranges and numbers can be combined freely in one command.
 
 #### `/cut`
 
-`/cut` surgically removes entries from the conversation history. The removed
-messages are stored so they can be restored with `/cut undo`. System messages
-are never removed.
+`/cut` trims the conversation down to the entries you name — everything else
+is removed. The removed messages are stored so they can be restored with
+`/cut undo`. System messages are never removed.
 
-| Command | Effect |
-|---------|--------|
-| `/cut N` | removes the last N entries (numbers `1..N`) |
-| `/cut a..b` | removes the entries numbered `a` to `b` |
-| `/cut undo` | restores the messages removed by the last `/cut` |
+| Command | Keeps | Removes |
+|---------|-------|---------|
+| `/cut N` | entries `N..M` (from entry N to the newest) | the older `1..N-1` |
+| `/cut -N` | the last N entries | everything older |
+| `/cut a..b` | only the entries numbered `a` to `b` | everything else |
+| `/cut undo` | — | restores what the last `/cut` removed |
 
-Example: after a `/cut 3`, the three most recent entries are gone, and the
-conversation continues from the remaining history. `/cut undo` brings them
-back, and a later `/cut` replaces the undo buffer (only the most recent cut is
-undoable).
+Example: after a `/cut 3`, the conversation is trimmed to entries `3..M`; the
+first two entries are gone. `/cut -3` keeps only the three most recent entries.
+`/cut undo` brings the removed messages back, and a later `/cut` replaces the
+undo buffer (only the most recent cut is undoable). Note the asymmetry with
+`/history`: `/history 3` *shows* the first 3 entries, while `/cut 3` *keeps*
+from entry 3 onward.
 
 #### Interruptions (Ctrl-C)
 
@@ -758,6 +795,9 @@ the configured default.
  | `LAMA_OLE_COLOR_METER_LOW` | color spec | (config-only, no flag) |
  | `LAMA_OLE_COLOR_METER_MID` | color spec | (config-only, no flag) |
  | `LAMA_OLE_COLOR_METER_HIGH` | color spec | (config-only, no flag) |
+  | `LAMA_OLE_FORMAT` | line template | (config-only, no flag) — shared `/history` + replay line templates (see "History and cutting") |
+  | `LAMA_OLE_FORMAT_HISTORY` | line template | (config-only, no flag) — per-view override for `/history` |
+  | `LAMA_OLE_FORMAT_REPLAY` | line template | (config-only, no flag) — per-view override for session replay |
 
 The `LAMA_OLE_COLOR_*` variables customize the ANSI colors used for the chat
 prompt, your typed input, the thinking stream, the LLM output, and the context

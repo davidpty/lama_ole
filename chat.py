@@ -43,6 +43,7 @@ from tool_base.logging import StateLogger
 from tool_base.engine import _print_diff_block
 
 import color_util
+import history as history_mod
 
 
 @dataclass
@@ -164,36 +165,14 @@ class ChatState:
         self.ollama_tools = to_ollama_tools(self.loaded_tools) if self.loaded_tools else None
 
     def get_history_entries(self):
-        """Returns a list of viewable history entries with numbering and type info."""
-        M = len(self.messages)
-        entries = []
-        for i, msg in enumerate(self.messages):
-            # Numbering: Index 0 -> M, Index M-1 -> 1
-            num = M - i
-            role = msg.get("role")
-            content = msg.get("content", "")
+        """Returns a list of viewable history entries with numbering and type info.
 
-            if role == "user":
-                entries.append({"num": num, "type": "user", "msg": msg})
-            elif role == "system":
-                # System messages are usually not part of the visible history in REPL
-                continue
-            elif role == "assistant":
-                # Check for thinking process (Ollama format)
-                if isinstance(content, dict) and "thinking" in content:
-                    entries.append({"num": num, "type": "thinking", "msg": msg})
-                elif isinstance(content, str) and "thought:" in content: # fallback if not structured
-                     entries.append({"num": num, "type": "thinking", "msg": msg})
-                else:
-                    # Check for tool calls
-                    if "tool_calls" in msg or (isinstance(content, dict) and "tool_calls" in content):
-                        entries.append({"num": num, "type": "toolcall", "msg": msg})
-                    else:
-                        entries.append({"num": num, "type": "output", "msg": msg})
-            elif role == "tool":
-                entries.append({"num": num, "type": "tool_result", "msg": msg})
-
-        return entries
+        Delegates to :mod:`history`, the shared model also used by /cut and
+        session replay. Entries are numbered 1 (oldest) .. V (newest) over
+        non-system messages, so the numbers shown by /history are exactly the
+        ones /cut accepts.
+        """
+        return history_mod.history_entries(self.messages)
 
     def undo_cut(self):
         """Restores the messages removed by the last /cut command."""
@@ -1225,6 +1204,7 @@ def _handle_command(line: str, state: ChatState) -> bool:
                 state.ctx_usage = dict(state.ctx_usage)
                 state.ctx_usage["_estimated"] = True
                 state.ctx_usage_model = arg
+            autosave_session(state)
             print(f"Switched to model: {arg}")
 
     elif cmd == "/plan":
@@ -1305,8 +1285,8 @@ def _show_help():
     print("  /systemprompt <file>  Load a system prompt from a file")
     print("  /systemprompt unset   Unset the system prompt")
     print("  /context [on|off]  Show context usage stats, or toggle the context meter")
-    print("  /history [-t] [N] [-N] [a..b ...]   Show conversation history entries")
-    print("  /cut N | /cut a..b | /cut undo   Remove entries from the history")
+    print("  /history [-t] [N] [-N] [a..b ...]   Show history entries (1 = oldest, -N = last N)")
+    print("  /cut N | /cut -N | /cut a..b | /cut undo   Trim history to a selection (keeps what you name)")
     print("  /help           Show this help message")
     print("  /exit, /quit    Exit the chat")
     print()
@@ -1438,58 +1418,8 @@ def _cmd_feed(path: str, state: ChatState):
 
 
 def _toolcall_summary(msg):
-    """Human-readable summary of the tool calls in an assistant message.
-
-    Mirrors the ``[data from <name>: <args>]`` marker that tool results are
-    wrapped with, so the default /history shows which tool was invoked with
-    which arguments without dumping the full result data.
-    """
-    calls = msg.get("tool_calls") or []
-    parts = []
-    for tc in calls:
-        fn = tc.get("function", {}) if isinstance(tc, dict) else {}
-        name = fn.get("name", "?")
-        arguments = fn.get("arguments") or {}
-        if isinstance(arguments, dict):
-            args_str = ", ".join(f"{k}={v!r}" for k, v in arguments.items())
-        else:
-            args_str = str(arguments)
-        parts.append(f"[data from {name}: {args_str}]")
-    return ", ".join(parts)
-
-
-def _format_history_entry(entry):
-    import json
-    num = entry['num']
-    etype = entry['type'].upper()
-    msg = entry['msg']
-    role = msg.get('role')
-    content = msg.get('content', '')
-    ts = msg.get('timestamp')
-    prefix = f"[{num}] [{ts}] " if ts else f"[{num}] "
-
-    if role == 'user':
-        return f"{prefix}USER: {content}"
-    elif role == 'assistant':
-        if etype == 'THINKING':
-            if isinstance(content, dict) and 'thinking' in content:
-                thought = content['thinking']
-                return f"{prefix}ASSISTANT (THOUGHT): {thought}"
-            else:
-                return f"{prefix}ASSISTANT (THOUGHT): {content}"
-        elif etype == 'TOOLCALL':
-            summary = _toolcall_summary(msg)
-            if summary:
-                return f"{prefix}ASSISTANT (TOOLCALL) TOOL: {summary}"
-            return f"{prefix}ASSISTANT (TOOLCALL)"
-        else: # output
-            if isinstance(content, dict):
-                return f"{prefix}ASSISTANT: {json.dumps(content)}"
-            return f"{prefix}ASSISTANT: {content}"
-    elif role == 'tool':
-        return f"{prefix}TOOL: {content}"
-    else:
-        return f"{prefix}{etype}: {msg}"
+    """Human-readable summary of the tool calls in an assistant message."""
+    return history_mod.toolcall_summary(msg)
 
 
 def _cmd_history(arg: str, state: ChatState):
@@ -1498,138 +1428,101 @@ def _cmd_history(arg: str, state: ChatState):
         print("No history available.")
         return
 
-    M = len(state.messages)
-    # -t includes tool responses; otherwise tool results are hidden
-    # (only output, thinking, toolcalls and user messages are shown).
+    # -t forces tool results on even when the template hides them.
     include_tool_results = False
-    target_ranges = []  # List of (start_num, end_num) where numbers are 1..M
-
+    tokens = []
     for token in arg.split():
         if token == "-t":
             include_tool_results = True
-        elif ".." in token:
-            try:
-                a, b = map(int, token.split(".."))
-                target_ranges.append((min(a, b), max(a, b)))
-            except ValueError:
-                pass
         else:
-            try:
-                val = int(token)
-            except ValueError:
-                continue
-            if val < 0:
-                n = abs(val)
-                target_ranges.append((1, n))
-            else:
-                # "first N" means numbers M down to M-N+1
-                target_ranges.append(("first", val))
+            tokens.append(token)
 
+    selectors = history_mod.parse_selectors(" ".join(tokens))
+    formats = history_mod.parse_line_formats("history")
     if include_tool_results:
-        visible = entries
-    else:
-        visible = [e for e in entries if e["type"] != "tool_result"]
+        formats = history_mod.with_tool_results(formats)
+    use_color = color_util.color_mode_enabled(state.color)
 
-    if not target_ranges:
-        # /history -> show all (respecting the -t filter)
-        for e in visible:
-            print(_format_history_entry(e))
+    if not selectors:
+        # /history -> show all entries that have a template, oldest first.
+        for e in entries:
+            line = history_mod.format_list_entry(e, use_color, formats=formats)
+            if line:
+                print(line)
         return
 
-    # Collect all numbers to show
-    numbers_to_show = set()
-    for r in target_ranges:
-        if isinstance(r[0], int):
-            start, end = r
-            for n in range(start, end + 1):
-                numbers_to_show.add(n)
-        elif r[0] == "first":
-            n = r[1]
-            # First N entries are numbers M, M-1, ..., M-N+1
-            for j in range(M - n + 1, M + 1):
-                numbers_to_show.add(j)
-
-    if not numbers_to_show:
+    numbers = history_mod.select_entry_numbers(entries, selectors)
+    if not numbers:
         print("No history matches the criteria.")
         return
 
-    # Sort numbers descending (M down to 1)
-    sorted_nums = sorted(numbers_to_show, reverse=True)
-
     found_any = False
-    for n in sorted_nums:
-        entry = next((e for e in visible if e["num"] == n), None)
-        if entry:
-            print(_format_history_entry(entry))
-            found_any = True
-
+    for e in entries:
+        if e["num"] in numbers:
+            line = history_mod.format_list_entry(e, use_color, formats=formats)
+            if line:
+                print(line)
+                found_any = True
     if not found_any:
         print("No history matches the criteria.")
 
 
 def _cmd_cut(arg: str, state: ChatState):
-    """Remove entries from the conversation history (/cut N, /cut a..b, /cut undo).
+    """Trim the conversation history down to a selection (/cut N, /cut -N, /cut a..b, /cut undo).
 
-    History numbers count from M (oldest) down to 1 (newest), matching
-    /history. /cut N removes entries numbered 1..N; /cut a..b removes the
-    entries numbered a..b. System messages are never removed.
+    ``/cut`` keeps exactly the entries it names and removes the rest: entries
+    are numbered 1 (oldest) .. V (newest), so ``/cut N`` keeps entries N..V
+    (dropping the older 1..N-1), ``/cut -N`` keeps the last N, and
+    ``/cut a..b`` keeps only that inclusive range (negative bounds count from
+    the end). ``/cut 1`` keeps everything and is a no-op. System messages are
+    never removed. The result is persisted immediately so the on-disk session
+    stays in sync with the live history.
     """
     arg = arg.strip()
     if not arg:
-        print("Usage: /cut N | /cut a..b | /cut undo")
+        print("Usage: /cut N | /cut -N | /cut a..b | /cut undo")
         return
 
     if arg == "undo":
         if state.undo_cut():
             print("Cut undone.")
+            autosave_session(state)
         else:
             print("Nothing to undo.")
         return
 
-    M = len(state.messages)
-    if M == 0:
+    entries = state.get_history_entries()
+    if not entries:
         print("No history to cut.")
         return
 
-    numbers = set()
-    for token in arg.split():
-        if ".." in token:
-            try:
-                a, b = map(int, token.split(".."))
-            except ValueError:
-                print(f"Invalid range: {token}")
-                return
-            lo, hi = min(a, b), max(a, b)
-            numbers.update(range(lo, hi + 1))
-        else:
-            try:
-                n = int(token)
-            except ValueError:
-                print(f"Invalid cut argument: {token}")
-                return
-            if n < 1:
-                print(f"Invalid cut argument: {token}")
-                return
-            # /cut N removes the last N entries (numbers 1..N).
-            numbers.update(range(1, n + 1))
+    selectors = history_mod.parse_cut_selectors(arg)
+    if not selectors:
+        print(f"Invalid cut argument: {arg}")
+        return
 
-    # Map history numbers (1..M) back to message indices (index = M - num).
-    indices = sorted({M - n for n in numbers if 1 <= n <= M}, reverse=True)
-    # Never remove system messages (keeps the conversation in a valid state).
-    indices = [i for i in indices if state.messages[i].get("role") != "system"]
-
-    if not indices:
+    # System messages are never removed (keeps the conversation valid).
+    kept = history_mod.select_message_indices(entries, selectors)
+    if not kept:
         print("Nothing to cut.")
         return
 
-    removed = [state.messages[i] for i in indices]
-    state._last_cut_messages = removed
-    state._last_cut_indices = indices
+    removed = [
+        i for i, msg in enumerate(state.messages)
+        if msg.get("role") != "system" and i not in set(kept)
+    ]
+    if not removed:
+        print("Nothing to cut.")
+        return
 
-    for i in indices:
+    state._last_cut_messages = [state.messages[i] for i in removed]
+    state._last_cut_indices = removed
+
+    for i in reversed(removed):
         del state.messages[i]
 
-    print(f"Cut {len(removed)} message(s).")
+    print(f"Cut {len(removed)} message(s), kept {len(kept)}.")
+    autosave_session(state)
 
 
 def serialize_session(
@@ -1696,8 +1589,14 @@ def apply_session(state: ChatState, data: dict, source: str = "session") -> None
 
     Shared by ``/load`` and session resume. Unknown or absent keys are
     ignored so old-format files and forward compatibility both work.
+
+    Restored messages that lack a timestamp are stamped so /history renders
+    uniformly after a load/resume (and the next autosave persists the stamps).
     """
     state.messages = data.get("messages", [])
+    for m in state.messages:
+        if isinstance(m, dict) and "timestamp" not in m:
+            m["timestamp"] = time.strftime("%Y-%m-%d %H:%M:%S")
     if data.get("session_id"):
         state.session_id = data["session_id"]
     if data.get("created_at"):
@@ -1970,57 +1869,26 @@ def _print_session(index: int, data: dict, current: bool = True) -> None:
 
 
 def _replay_history(state: ChatState, use_color: bool) -> None:
-    """Replay the conversation so a resumed session reads like the original.
+    """Replay a resumed session as a numbered listing, identical to /history.
 
-    System messages (safety prompt / skills) are skipped. Stored thinking is
-    replayed only when ``show_thinking`` is on (it is captured in the first
-    place only when ``-t`` was set during generation), mirroring live
-    visibility. Tool call/result markers are shown only when ``verbose >= 1``,
-    mirroring their live visibility in a normal run. Stored edit diffs are
-    replayed when ``show_diff`` is on, mirroring live edit display.
+    Rendering delegates to the shared history model (``format_list_entry``)
+    with the replay view's line templates (``LAMA_OLE_FORMAT_REPLAY`` on top
+    of ``LAMA_OLE_FORMAT``), so a resumed session matches /history unless
+    configured independently. Stored edit diffs are printed after tool
+    entries when ``show_diff`` is on, mirroring live edit display.
     """
-    verbose = state.verbose or 0
-    for m in state.messages:
-        role = m.get("role")
-        content = m.get("content") or ""
-        if role == "system":
-            continue
-        if role == "user":
-            if m.get("compacted"):
-                label = color_util.colored("[compacted context] ", color_util.C_METER_MID, use_color)
-                print(label + color_util.colored(content, color_util.C_OUTPUT, use_color))
-            else:
-                print(
-                    color_util.colored(">>> ", color_util.C_PROMPT, use_color)
-                    + color_util.colored(content, color_util.C_INPUT, use_color)
-                )
-        elif role == "assistant":
-            if state.show_thinking and m.get("thinking"):
-                print(color_util.colored(m["thinking"], color_util.C_THINK, use_color))
-                print()
-            tool_calls = m.get("tool_calls") or []
-            if tool_calls:
-                if verbose >= 1:
-                    for tc in tool_calls:
-                        fn = tc.get("function", {})
-                        name = fn.get("name") or "?"
-                        arguments = fn.get("arguments") or {}
-                        if isinstance(arguments, dict):
-                            args_str = ", ".join(f"{k}={v!r}" for k, v in arguments.items())
-                        else:
-                            args_str = str(arguments)
-                        print(color_util.colored(f"[tool: {name}({args_str})]", color_util.C_OUTPUT, use_color))
-            elif content:
-                print(color_util.colored(content, color_util.C_OUTPUT, use_color))
-        elif role == "tool":
-            if verbose >= 1:
-                print(color_util.colored(f"[tool result: {m.get('tool_name') or '?'}]", color_util.C_OUTPUT, use_color))
-            if state.show_diff and m.get("diff"):
-                _print_diff_block(
-                    m.get("file") or m.get("tool_name") or "?",
-                    m.get("diff") or "",
-                    use_color,
-                )
+    formats = history_mod.parse_line_formats("replay")
+    for entry in state.get_history_entries():
+        text = history_mod.format_list_entry(entry, use_color, formats=formats)
+        if text:
+            print(text)
+        msg = entry["msg"]
+        if msg.get("role") == "tool" and state.show_diff and msg.get("diff"):
+            _print_diff_block(
+                msg.get("file") or msg.get("tool_name") or "?",
+                msg.get("diff") or "",
+                use_color,
+            )
 
 
 def _resume_into_state(state: ChatState, path: str, data: dict) -> None:
@@ -2275,6 +2143,7 @@ def _cmd_skill(arg: str, state: ChatState):
         state.skill = " ".join(names)
         state.skill_text = combined
         state.apply_skill()
+        autosave_session(state)
         print(f"Skill loaded: {' '.join(names)} ({len(combined)} characters)")
 
     elif sub == "unload":
@@ -2284,6 +2153,7 @@ def _cmd_skill(arg: str, state: ChatState):
         state.skill = None
         state.skill_text = None
         state.apply_skill()
+        autosave_session(state)
         print("Skill unloaded.")
 
     elif sub == "show":
@@ -2311,6 +2181,7 @@ def _cmd_systemprompt(arg: str, state: ChatState):
             return
         state.system_prompt = None
         state.apply_skill()
+        autosave_session(state)
         print("System prompt unset.")
         return
 
@@ -2326,6 +2197,7 @@ def _cmd_systemprompt(arg: str, state: ChatState):
         return
     state.system_prompt = text
     state.apply_skill()
+    autosave_session(state)
     print(f"System prompt loaded ({len(text)} characters)")
 
 
@@ -2487,6 +2359,7 @@ def _tools_load(names: str, state: ChatState):
             return
     state.refresh_ollama_tools()
     short_names = " ".join(m.rsplit(".", 1)[-1] for m in loaded_any)
+    autosave_session(state)
     print(f"Loaded toolset(s): {short_names}")
 
 
@@ -2516,6 +2389,7 @@ def _tools_unload(names: str, state: ChatState):
     state.loaded_tools = [t for t in state.loaded_tools if t not in remove_tools]
     state.refresh_ollama_tools()
     short_names = " ".join(m.rsplit(".", 1)[-1] for m in to_remove)
+    autosave_session(state)
     print(f"Unloaded toolset(s): {short_names}")
 
 
