@@ -7,6 +7,7 @@ project file > user file), the typed env helpers, the argparse integration
 
 import importlib.util
 import os
+import re
 import pytest
 import sys
 
@@ -267,3 +268,61 @@ class TestResolveEnvDefaults:
         _resolve_env_defaults(args)
         assert args.tools is None
         assert args.vision_models is None
+
+
+class TestExampleConfig:
+    """Guard for lama_ole.env.example: it must stay inert and in sync.
+
+    The example is a commented-out reference, so copying it must change
+    nothing (``_parse_env_file`` returns an empty dict). Every key it
+    documents must be a real runtime variable, and every CLI env default must
+    be documented in it — otherwise a rename or a new flag leaves the
+    reference config stale.
+    """
+
+    EXAMPLE = os.path.join(lama_ole_dir, "lama_ole.env.example")
+
+    _RUNTIME_SOURCES = [
+        "lama_ole.py",
+        "chat.py",
+        "history.py",
+        os.path.join("tool_base", "engine.py"),
+        os.path.join("lsp", "registry.py"),
+        os.path.join("lsp", "session.py"),
+        os.path.join("tools", "media_understanding_tools.py"),
+        os.path.join("tools", "lsp_tools.py"),
+    ]
+
+    @classmethod
+    def _documented_keys(cls):
+        text = open(cls.EXAMPLE, encoding="utf-8").read()
+        return set(re.findall(r"^#(LAMA_OLE_[A-Z0-9_]+)=", text, re.M))
+
+    @classmethod
+    def _known_runtime_vars(cls):
+        found = set()
+        for rel in cls._RUNTIME_SOURCES:
+            path = os.path.join(lama_ole_dir, rel)
+            found.update(
+                re.findall(r"LAMA_OLE_[A-Z0-9_]+", open(path, encoding="utf-8").read())
+            )
+        return found
+
+    def test_example_is_inert_when_copied(self):
+        assert _parse_env_file(self.EXAMPLE) == {}
+
+    def test_every_documented_key_is_a_real_var(self):
+        documented = self._documented_keys()
+        unknown = documented - self._known_runtime_vars()
+        assert not unknown, "example documents unrecognized vars: %s" % sorted(unknown)
+
+    def test_every_cli_env_default_is_documented(self):
+        cli_envs = set(
+            re.findall(
+                r'_env_(?:str|int|float|bool|choice|list)\("(LAMA_OLE_[A-Z0-9_]+)"',
+                open(os.path.join(lama_ole_dir, "lama_ole.py"), encoding="utf-8").read(),
+            )
+        )
+        documented = self._documented_keys()
+        missing = cli_envs - documented
+        assert not missing, "CLI env defaults missing from example: %s" % sorted(missing)
