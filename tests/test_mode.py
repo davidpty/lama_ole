@@ -26,7 +26,10 @@ def _make_state(**kwargs):
 
 
 def _tool_names(state):
-    return [t.function.name for t in state.ollama_tools]
+    return [
+        t["function"]["name"] if isinstance(t, dict) else t.function.name
+        for t in state.ollama_tools
+    ]
 
 
 def _state_with_tools(modules):

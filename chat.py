@@ -155,7 +155,7 @@ class ChatState:
         self.messages.insert(0, {"role": "system", "content": new_content})
 
     def refresh_ollama_tools(self) -> None:
-        """Recompute the Ollama tool list from ``loaded_tools``.
+        """Recompute the backend tool list from ``loaded_tools``.
 
         Called after every runtime load/unload so the next turn advertises
         exactly the current set of tools. The full set is advertised in both
@@ -163,7 +163,14 @@ class ChatState:
         (see the engine's plan-mode gate), so the model always knows which
         tools exist and will work once build mode is active.
         """
-        self.ollama_tools = to_ollama_tools(self.loaded_tools) if self.loaded_tools else None
+        if not self.loaded_tools:
+            self.ollama_tools = None
+            return
+        make_tools = getattr(self.client, "make_tools", None)
+        if callable(make_tools):
+            self.ollama_tools = make_tools(self.loaded_tools)
+        else:
+            self.ollama_tools = to_ollama_tools(self.loaded_tools)
 
     def get_history_entries(self):
         """Returns a list of viewable history entries with numbering and type info.
@@ -1524,13 +1531,15 @@ def _cmd_model(arg: str, state: ChatState):
     if not arg:
         print(f"Current model: {state.model}")
     else:
-        state.model = arg
-        if state.ctx_usage and state.ctx_usage_model and state.ctx_usage_model != arg:
+        canonicalize = getattr(state.client, "canonicalize", None)
+        model = canonicalize(arg) if callable(canonicalize) else arg
+        state.model = model
+        if state.ctx_usage and state.ctx_usage_model and state.ctx_usage_model != model:
             state.ctx_usage = dict(state.ctx_usage)
             state.ctx_usage["_estimated"] = True
-            state.ctx_usage_model = arg
+            state.ctx_usage_model = model
         autosave_session(state)
-        print(f"Switched to model: {arg}")
+        print(f"Switched to model: {model}")
 
 
 def _cmd_compact(arg: str, state: ChatState):

@@ -4,8 +4,6 @@ import sys
 import time
 from typing import Any, Optional, List
 
-from ollama import Tool as OllamaTool
-
 import color_util
 
 from .models import Tool
@@ -139,7 +137,7 @@ def run_with_tools(
     model,
     messages: List[dict],
     loaded_tools: List[Tool],
-    ollama_tools: Optional[List[OllamaTool]],
+    ollama_tools: Optional[List[dict]],
     options: dict,
     keep_alive: Any,
     show_thinking: bool,
@@ -240,27 +238,40 @@ def run_with_tools(
             _log_ndjson_message(ndjson_log_file_handle, model, system_msg)
 
     if ollama_websearch:
-        web_tool = OllamaTool(
-            type="function",
-            function=OllamaTool.Function(
-                name="web_search",
-                description="Search the web for current information",
-                parameters=OllamaTool.Function.Parameters(
-                    type="object",
-                    properties={
-                        "query": OllamaTool.Function.Parameters.Property(
-                            type="string",
-                            description="The search query",
-                        ),
-                    },
-                    required=["query"],
-                ),
-            ),
-        )
-        if ollama_tools:
-            ollama_tools.append(web_tool)
+        # Only backends with a built-in web search (Ollama) get the native
+        # tool; llama.cpp has no equivalent, so the option is skipped with a
+        # warning instead of silently advertising a tool that cannot run.
+        supports_websearch = getattr(
+            client, "supports_native_websearch", lambda m: True
+        )(model)
+        if not supports_websearch:
+            print(
+                "[warning] --ollama_websearch is not supported by the "
+                "llama.cpp backend; skipping the native web search tool.",
+                file=sys.stderr,
+            )
         else:
-            ollama_tools = [web_tool]
+            web_tool = {
+                "type": "function",
+                "function": {
+                    "name": "web_search",
+                    "description": "Search the web for current information",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "query": {
+                                "type": "string",
+                                "description": "The search query",
+                            },
+                        },
+                        "required": ["query"],
+                    },
+                },
+            }
+            if ollama_tools:
+                ollama_tools.append(web_tool)
+            else:
+                ollama_tools = [web_tool]
 
     if verbose >= 2:
         from .logging import _log_messages_payload
@@ -657,7 +668,13 @@ def run_with_tools(
     return final_response
 
 
-def to_ollama_tools(tools: List[Tool]) -> List[OllamaTool]:
+def to_openai_tools(tools: List[Tool]) -> List[dict]:
+    """Convert ``tool_base.Tool`` objects to OpenAI-style function tool dicts.
+
+    The resulting dicts are accepted by both Ollama (the SDK accepts plain
+    dicts) and the llama.cpp OpenAI-compatible API, so both backends share a
+    single tool format.
+    """
     result = []
     for t in tools:
         params = t.parameters
@@ -665,24 +682,27 @@ def to_ollama_tools(tools: List[Tool]) -> List[OllamaTool]:
         required = params.get("required", [])
 
         for pname, pinfo in params.get("properties", {}).items():
-            prop = OllamaTool.Function.Parameters.Property(
-                type=pinfo.get("type", "string"),
-                description=pinfo.get("description", ""),
-            )
+            prop = {"type": pinfo.get("type", "string")}
+            if pinfo.get("description"):
+                prop["description"] = pinfo["description"]
             if "enum" in pinfo:
-                prop.enum = pinfo["enum"]
+                prop["enum"] = pinfo["enum"]
             properties[pname] = prop
-        ot = OllamaTool(
-            type="function",
-            function=OllamaTool.Function(
-                name=t.name,
-                description=t.description,
-                parameters=OllamaTool.Function.Parameters(
-                    type="object",
-                    properties=properties,
-                    required=required if required else None,
-                ),
-            ),
+        result.append(
+            {
+                "type": "function",
+                "function": {
+                    "name": t.name,
+                    "description": t.description,
+                    "parameters": {
+                        "type": "object",
+                        "properties": properties,
+                        "required": required if required else None,
+                    },
+                },
+            }
         )
-        result.append(ot)
     return result
+
+
+to_ollama_tools = to_openai_tools

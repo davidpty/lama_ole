@@ -28,10 +28,15 @@ from tool_base import (
     load_tools,
     set_ollama_host,
     set_vision_models,
-    to_ollama_tools,
+    to_openai_tools,
     run_with_tools,
     sanitize_ctx_threshold,
     DEFAULT_CTX_COMPACT_THRESHOLD,
+)
+from backends import (
+    DEFAULT_OLLAMA_HOST,
+    DEFAULT_LLAMACPP_HOST,
+    create_router,
 )
 import color_util
 from chat import (
@@ -167,10 +172,18 @@ def build_parser():
     )
     # Define arguments
     parser.add_argument(
-        "--host",
+        "--ollama-host", "--host",
+        dest="ollama_host",
         type=str,
-        default=_env_str("LAMA_OLE_HOST", "http://localhost:11434"),
-        help="The host of the ollama instance (e.g. http://localhost:11434)"
+        default=_env_str("LAMA_OLE_HOST", DEFAULT_OLLAMA_HOST),
+        help="The host of the Ollama instance (e.g. http://localhost:11434)"
+    )
+    parser.add_argument(
+        "--llamacpp-host",
+        dest="llamacpp_host",
+        type=str,
+        default=_env_str("LAMA_OLE_LLAMACPP_HOST", DEFAULT_LLAMACPP_HOST),
+        help="The host of the llama.cpp llama-server (e.g. http://localhost:8080)"
     )
     parser.add_argument(
         "-m", "--model",
@@ -618,22 +631,44 @@ def _prompt_model_choice(cli_model, session_model):
         print("Please answer s, c or a.", file=sys.stderr)
 
 
+def _same_model(a, b, client):
+    """True when two model ids refer to the same backend model.
+
+    Bare names and their namespaced form compare equal
+    (``gemma2:2b`` == ``ollama.gemma2:2b``) so resuming an older session does
+    not spuriously prompt for a model choice.
+    """
+    if a is None or b is None:
+        return a == b
+    canonicalize = getattr(client, "canonicalize", None)
+    if callable(canonicalize):
+        return canonicalize(a) == canonicalize(b)
+    return a == b
+
+
 def _resume_session_into(state, resume):
     """Restore the most recent session into ``state`` at startup.
 
     If the CLI model differs from the session's model, ask the user which to
-    keep (the session model, the CLI model, or abort). ``args.model`` is not
-    updated for the resumed turns; the chosen model is applied to the state.
+    keep (the session model, the CLI model, or abort). Canonically identical
+    models (e.g. a bare name vs its namespaced form) are adopted silently.
+    ``args.model`` is not updated for the resumed turns; the chosen model is
+    applied to the state.
     """
     path, data = resume
     session_model = data.get("model")
     cli_model = state.model
-    if cli_model and session_model and cli_model != session_model:
-        choice = _prompt_model_choice(cli_model, session_model)
-        if choice == "abort":
-            sys.exit(0)
-        if choice == "cli":
+    if cli_model and session_model:
+        if _same_model(cli_model, session_model, state.client):
             data["model"] = cli_model
+        else:
+            choice = _prompt_model_choice(cli_model, session_model)
+            if choice == "abort":
+                sys.exit(0)
+            if choice == "cli":
+                data["model"] = cli_model
+    elif cli_model:
+        data["model"] = cli_model
     apply_session(state, data, source=path)
     title = data.get("title") or "(untitled)"
     n = len(state.messages)
@@ -659,13 +694,16 @@ def main():
         meter_high=_env_str("LAMA_OLE_COLOR_METER_HIGH", None),
     )
 
-    host_url = args.host
-    if not host_url.startswith(('http://', 'https://')) and ':' in host_url:
-        host_url = f"http://{host_url}"
-    client = Client(host=host_url)
+    ollama_host = _normalize_host_with_default(args.ollama_host, 11434)
+    llamacpp_host = _normalize_host_with_default(args.llamacpp_host, 8080)
+    client = create_router(
+        ollama_host=ollama_host,
+        llamacpp_host=llamacpp_host,
+        api_key=os.environ.get("LAMA_OLE_LLAMACPP_API_KEY"),
+    )
 
     # Propagate host and vision models to tools
-    set_ollama_host(host_url)
+    set_ollama_host(ollama_host)
     if args.vision_models:
         set_vision_models(args.vision_models)
 
@@ -675,24 +713,31 @@ def main():
         sys.exit(0)
 
     if args.list:
-        print( "available models:")
+        print("available models:")
         response = client.list()
-        for model in response.models:
-            print(model)
+        for entry in response.models:
+            print(entry.model)
 
     if args.ps:
-        print( "running models:")
+        print("running models:")
         response = client.ps()
-        for model in response.models:
-            print(model)
+        for entry in response.models:
+            print(entry.model)
 
 
     if args.list or args.ps:
      sys.exit(0)
 
     if args.stop:
-        client.generate(model=args.stop, keep_alive=0)
-        print(f"Stopped model: {args.stop}")
+        stopped = client.stop(args.stop)
+        if stopped:
+            print(f"Stopped model: {args.stop}")
+        else:
+            print(
+                f"Model {args.stop} is managed by the llama.cpp server; "
+                "nothing to unload.",
+                file=sys.stderr,
+            )
         sys.exit(0)
 
     if args.transfer:
@@ -731,17 +776,21 @@ def main():
             except Exception as e:
                 print(f"Error loading tool module '{module_name}': {e}", file=sys.stderr)
                 sys.exit(1)
-    ollama_tools = to_ollama_tools(loaded_tools) if loaded_tools else None
+    ollama_tools = to_openai_tools(loaded_tools) if loaded_tools else None
 
     if args.debug:
         import code
-        print(f"Debug mode: model={args.model}, host={host_url}")
+        print(
+            f"Debug mode: model={args.model}, "
+            f"ollama={ollama_host}, llamacpp={llamacpp_host}"
+        )
         local_vars = {
             'client': client,
             'loaded_tools': loaded_tools,
             'ollama_tools': ollama_tools,
             'args': args,
-            'host_url': host_url,
+            'ollama_host': ollama_host,
+            'llamacpp_host': llamacpp_host,
             'sys': sys,
             'os': os,
         }
@@ -773,9 +822,32 @@ def main():
                 print(f"    {t.name}({sig}) — {t.description}")
         sys.exit(0)
 
-    if not args.model :
-        print( "Error: model has to be set (parameter -m , --model)", file=sys.stderr)
-        sys.exit(1)
+    if not args.model:
+        default_model = client.resolve_default_model()
+        if default_model:
+            args.model = default_model
+            print(f"Using llama.cpp model: {args.model}", file=sys.stderr)
+        else:
+            try:
+                resp = client.list()
+                candidates = [entry.model for entry in resp.models]
+            except Exception:
+                candidates = []
+            if candidates:
+                print(
+                    "Error: model has to be set (parameter -m, --model). "
+                    "Available models: " + ", ".join(candidates),
+                    file=sys.stderr,
+                )
+            else:
+                print(
+                    "Error: model has to be set (parameter -m, --model) and no "
+                    "reachable backend is serving models.",
+                    file=sys.stderr,
+                )
+            sys.exit(1)
+
+    args.model = client.canonicalize(args.model)
 
     # Determine initial content (optional in chat mode)
     content = ""
@@ -1017,12 +1089,16 @@ def main():
 # ---------------------------------------------------------------------------
 
 
-def _normalize_host(host):
+def _normalize_host_with_default(host, default_port):
     if not host.startswith(("http://", "https://")):
         host = f"http://{host}"
     if ":" not in host.split("/")[-1]:
-        host = f"{host}:11434"
+        host = f"{host}:{default_port}"
     return host
+
+
+def _normalize_host(host):
+    return _normalize_host_with_default(host, 11434)
 
 
 def _find_models_dir():

@@ -2,9 +2,9 @@
 
 # lama_ole
 
-A CLI tool to interact with **Ollama** instances. Supports streaming chat, tool
-calling, thinking-process handling, media understanding (image/video/audio), and
-flexible input/output options.
+A CLI tool to interact with **Ollama** and **llama.cpp** (`llama-server`)
+instances. Supports streaming chat, tool calling, thinking-process handling,
+media understanding (image/video/audio), and flexible input/output options.
 
 ## For the impatient developer
 ```
@@ -35,6 +35,9 @@ lama_ole.py --host localhost -m gemma4:26b-a4b-it-qat --chat -t -v --tool tools.
 - **Media Understanding** — Image description/OCR, video frame analysis, audio
   transcription via bundled `tools.media_understanding_tools`.
 - **Model Listing** — List available or running models (`-l`, `--ps`).
+- **Dual Backends** — Use Ollama and a llama.cpp `llama-server` side by side;
+  the backend is selected per model by its `ollama.` / `llamacpp.` name
+  namespace (`--ollama-host` / `--llamacpp-host`).
 - **Ollama Options** — Pass through `temperature`, `num_ctx`, `num_gpu`,
   `keep_alive`.
 - **Model Transfer** — Copy models between ollama instances (`--transfer`).
@@ -91,6 +94,64 @@ With an initial system message:
 ```bash
 python3 lama_ole.py --chat -m llama3.2:3b -i "You are a helpful assistant."
 ```
+
+## llama.cpp Backend
+
+lama_ole can also talk to a **llama.cpp** `llama-server` (the OpenAI-compatible
+HTTP server that ships with llama.cpp) in parallel with Ollama. The backend is
+selected per model via a name namespace, so a single session can switch between
+the two with `/model`.
+
+Start the server (tool calling requires the `--jinja` flag):
+
+```bash
+llama-server -m /models/qwen2.5-7b-instruct-q4_k_m.gguf --jinja --port 8080
+```
+
+Use a llama.cpp model by prefixing its served id with `llamacpp.`:
+
+```bash
+python3 lama_ole.py -m llamacpp.qwen2.5-7b-instruct-q4_k_m.gguf -i "Hello!"
+```
+
+### Hosts
+
+- `--ollama-host` / `--host` (env `LAMA_OLE_HOST`, default
+  `http://localhost:11434`) — the Ollama server.
+- `--llamacpp-host` (env `LAMA_OLE_LLAMACPP_HOST`, default
+  `http://localhost:8080`) — the llama.cpp `llama-server`.
+- `LAMA_OLE_LLAMACPP_API_KEY` — sent as a `Bearer` token if the server is
+  configured with an API key.
+
+Both hosts can be set in the env file
+(`~/.config/lama_ole/lama_ole.env` or `./lama_ole.env`).
+
+### Model naming
+
+The namespace is everything before the *first* dot; when it is not a known
+backend name, the model belongs to Ollama.
+
+| Model id | Backend |
+|----------|---------|
+| `gemma2:2b` | Ollama |
+| `ollama.gemma2:2b` | Ollama |
+| `llamacpp.qwen2.5-7b-q4_k_m.gguf` | llama.cpp |
+| `/models/qwen.gguf` | llama.cpp (basename becomes the id) |
+
+`/model` completion lists both backends together (`ollama.…` and
+`llamacpp.…`). When `-m` is omitted, lama_ole defaults to the first llama.cpp
+model if Ollama is unreachable but the llama-server is serving models.
+
+### Supported features
+
+Streaming, tool calling, thinking display (`-t`, `--thoughtlog`), the context
+meter, `/stats`, compaction, and `/model` switching all work against both
+backends. llama.cpp specifics:
+
+- `--num_ctx`, `--num_gpu`, `--keep_alive` are ignored (the server manages its
+  own context window and lifecycle); a one-time warning is printed.
+- `--ollama_websearch` is unavailable and skipped with a warning.
+- Media-understanding tools and `--transfer` remain Ollama-only.
 
 ## Tool Calling
 

@@ -166,12 +166,18 @@ def test_run_chat_interrupt_during_turn_rolls_back_and_continues(
 
 
 def test_main_initial_content_interrupt_falls_back_to_repl(monkeypatch, capsys):
-    class FakeClient:
+    class FakeRouter:
         def __init__(self, *args, **kwargs):
             pass
 
         def chat(self, **kwargs):
             raise KeyboardInterrupt()
+
+        def canonicalize(self, model_id):
+            return model_id
+
+        def resolve_default_model(self):
+            return None
 
     calls = {"run_chat": 0}
     seen = {"state": None}
@@ -180,7 +186,7 @@ def test_main_initial_content_interrupt_falls_back_to_repl(monkeypatch, capsys):
         calls["run_chat"] += 1
         seen["state"] = state
 
-    monkeypatch.setattr(lama_ole_cli, "Client", FakeClient)
+    monkeypatch.setattr(lama_ole_cli, "create_router", FakeRouter)
     monkeypatch.setattr(lama_ole_cli, "run_chat", fake_run_chat)
     monkeypatch.setattr(lama_ole_cli, "load_env_files", lambda: None)
     for key in (
