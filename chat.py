@@ -25,6 +25,7 @@ from tool_base import (
     get_available_toolsets,
     get_tools_of_module,
     peek_tools_of_module,
+    module_file_has_tools,
 )
 from tool_base.compaction import (
     COMPACTION_SYSTEM_PROMPT,
@@ -279,38 +280,11 @@ def _bind_mode_toggle(state: ChatState) -> None:
         pass
 
 
-_COMMANDS = [
-    "/feed",
-    "/new",
-    "/compact",
-    "/model",
-    "/plan",
-    "/build",
-    "/save",
-    "/load",
-    "/resume",
-    "/sessions",
-    "/stats",
-    "/rename",
-    "/tools",
-    "/skill",
-    "/systemprompt",
-    "/context",
-    "/history",
-    "/cut",
-    "/help",
-    "/exit",
-    "/quit",
-]
-
-_COMMAND_SUBCOMMANDS = {
-    "/compact": ["auto"],
-    "/tools": ["loaded", "available", "show", "all", "load", "unload"],
-    "/skill": ["list", "load", "unload", "show"],
-    "/systemprompt": ["show", "unset"],
-}
-
 _PATH_COMMANDS = {"/feed", "/save", "/load"}
+
+# _COMMANDS and _COMMAND_SUBCOMMANDS are derived from the data-driven
+# dispatch tables at the bottom of this module (single source of truth for
+# both /handle_command dispatch and Tab completion).
 
 
 def _complete_file_path(partial: str) -> list:
@@ -338,12 +312,252 @@ def _complete_file_path(partial: str) -> list:
     return matches
 
 
-def _completion_candidates(buffer: str) -> list:
+def _toolset_segment_dir(tools_dir: str, seg: str):
+    """Resolve a leading dotted segment of a module path to a package directory.
+
+    ``tools`` maps to the tools directory itself. Any other segment resolves to
+    a subpackage inside ``tools/`` (``tools_dir/<seg>``) first, falling back to
+    a sibling package at the same level as ``tools/`` (the parent of
+    ``tools_dir``), so tools can live in packages like ``tools_security`` or
+    ``mycompany``. Returns ``(abs_dir, module_prefix)`` or ``(None, None)``.
+    """
+    if seg == "tools":
+        return tools_dir, "tools"
+    if not tools_dir:
+        return None, None
+    sub = os.path.join(tools_dir, seg)
+    if os.path.isdir(sub) and os.path.isfile(os.path.join(sub, "__init__.py")):
+        return sub, f"tools.{seg}"
+    parent = os.path.dirname(tools_dir)
+    if parent:
+        sib = os.path.join(parent, seg)
+        if os.path.isdir(sib) and os.path.isfile(os.path.join(sib, "__init__.py")):
+            return sib, seg
+    return None, None
+
+
+def _complete_toolset_module(partial: str, tools_dir: str = None) -> list:
+    """Completion candidates for a /tools load argument.
+
+    Bare names complete against the tools package (only modules that are real
+    tool modules). Dotted names descend into package directories: the first
+    segment resolves to a physical package dir (the tools dir, a subpackage of
+    it, or a sibling package next to it) and each following segment walks into
+    a subpackage. Leaf modules are offered only when they are tool modules
+    (they import ``@tool`` from ``tool_base``); package dirs are always offered
+    with a trailing dot so Tab keeps descending into them.
+    """
+    if tools_dir is None:
+        from tool_base.registry import _TOOLS_PACKAGE_DIR
+        tools_dir = _TOOLS_PACKAGE_DIR
+
+    if "." not in partial:
+        names = get_available_toolsets(tools_dir, only_tool_modules=True)
+        return [n for n in names if n.startswith(partial)]
+
+    segments = partial.split(".")
+    pkg_dir, prefix = _toolset_segment_dir(tools_dir, segments[0])
+    if pkg_dir is None:
+        return []
+    for seg in segments[1:-1]:
+        pkg_dir = os.path.join(pkg_dir, seg)
+        if not (
+            os.path.isdir(pkg_dir)
+            and os.path.isfile(os.path.join(pkg_dir, "__init__.py"))
+        ):
+            return []
+        prefix = f"{prefix}.{seg}"
+    last = segments[-1]
+    try:
+        entries = sorted(os.listdir(pkg_dir))
+    except OSError:
+        return []
+    out = []
+    for name in entries:
+        if not name.startswith(last):
+            continue
+        full = os.path.join(pkg_dir, name)
+        if (
+            os.path.isfile(full)
+            and name.endswith(".py")
+            and not name.startswith("_")
+            and name != "__init__.py"
+        ):
+            if module_file_has_tools(full):
+                out.append(f"{prefix}.{name[:-3]}")
+        elif os.path.isdir(full) and os.path.isfile(
+            os.path.join(full, "__init__.py")
+        ):
+            out.append(f"{prefix}.{name}.")
+    return out
+
+
+_RESUME_ANNOTATION_MARKER = "→"
+
+
+def _session_completion_candidates(sessions_dir: str, partial: str) -> list:
+    """Completion candidates for /resume: session titles and 8-char ids.
+
+    Current-cwd sessions come first as plain titles; sessions from other
+    projects follow, annotated with their recorded project path so the two
+    groups stay visually distinct in the match list. _cmd_resume strips the
+    annotation marker before matching, so selecting an annotated candidate
+    still resolves.
+    """
+    if not sessions_dir:
+        return []
+    current = os.path.normpath(os.getcwd())
+    current_hits = []
+    others = {}
+    for path, data in _list_session_files(sessions_dir):
+        title = (data.get("title") or "").strip()
+        sid = (data.get("session_id") or "").strip()
+        parts = [title] if title else []
+        if sid:
+            parts.append(sid[:8])
+        hits = [p for p in parts if p.lower().startswith(partial.lower())]
+        if not hits:
+            continue
+        cwd = os.path.normpath(data.get("cwd") or "")
+        if cwd == current:
+            current_hits.extend(hits)
+        else:
+            others.setdefault(cwd, []).extend(hits)
+    out = []
+    seen = set()
+    for cand in sorted(set(current_hits)):
+        seen.add(cand)
+        out.append(cand)
+    for cwd in sorted(others):
+        for cand in sorted(set(others[cwd])):
+            annotated = f"{cand}  {_RESUME_ANNOTATION_MARKER}  {cwd}"
+            if annotated not in seen and cand not in seen:
+                seen.add(annotated)
+                out.append(annotated)
+    return out
+
+
+_MODEL_LIST_TTL = 60.0
+
+
+def _make_model_lister(state: ChatState) -> callable:
+    """Return a model-listing callable for the completion closure.
+
+    ``client.list()`` is a network round-trip to Ollama, so the result is
+    cached for a short TTL. The cache is only marked fresh on success: a
+    transient failure returns the stale list (or ``[]``) and retries on the
+    next Tab.
+    """
+    cache = {"ts": 0.0, "loaded": False, "names": []}
+    client = getattr(state, "client", None)
+
+    def lister():
+        if client is None:
+            return []
+        now = time.time()
+        if cache["loaded"] and now - cache["ts"] < _MODEL_LIST_TTL:
+            return cache["names"]
+        try:
+            resp = client.list()
+            names = sorted(
+                {
+                    getattr(m, "model", None) or getattr(m, "name", None)
+                    for m in getattr(resp, "models", []) or []
+                }
+            )
+            names = [n for n in names if n]
+        except Exception:
+            return cache["names"]
+        cache["ts"] = now
+        cache["loaded"] = True
+        cache["names"] = names
+        return names
+
+    return lister
+
+
+def _model_completion_candidates(list_models: callable, partial: str) -> list:
+    """Completion candidates for /model: installed model names, prefix-sorted."""
+    if list_models is None:
+        return []
+    try:
+        names = sorted(set(list_models()))
+    except Exception:
+        return []
+    return [n for n in names if n.startswith(partial)]
+
+
+def _skill_load_completion_candidates(skills_dir: str, partial: str) -> list:
+    """Completion candidates for /skill load: skills-dir names plus file paths.
+
+    Skill files are offered by their stem (``code-reviewer.md`` →
+    ``code-reviewer``) because ``_resolve_skill_path`` accepts the bare name.
+    File-path candidates are merged in so arbitrary paths keep completing.
+    """
+    out = []
+    if skills_dir is None:
+        skills_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "skills")
+    if os.path.isdir(skills_dir):
+        for name in sorted(os.listdir(skills_dir)):
+            full = os.path.join(skills_dir, name)
+            if not os.path.isfile(full) or name.startswith("_"):
+                continue
+            stem = os.path.splitext(name)[0]
+            if stem.startswith(partial):
+                out.append(stem)
+    for f in _complete_file_path(partial):
+        if f not in out:
+            out.append(f)
+    return out
+
+
+def _sessions_rm_completion_candidates(sessions_dir: str, partial: str) -> list:
+    """Completion candidates for /sessions rm: 'all' and valid session numbers.
+
+    Numbers follow the /sessions numbering (1 = oldest across all projects),
+    matching what /sessions rm resolves against.
+    """
+    if not sessions_dir:
+        return []
+    count = len(_list_session_files(sessions_dir))
+    candidates = ["all"] + [str(i) for i in range(1, count + 1)]
+    return [c for c in candidates if c.startswith(partial)]
+
+
+def _session_id_prefix_completion_candidates(sessions_dir: str, partial: str) -> list:
+    """Completion candidates for the /rename <id-prefix> form.
+
+    Returns 8-char session-id prefixes matching the typed prefix, mirroring the
+    id lookup in _cmd_rename.
+    """
+    if not sessions_dir:
+        return []
+    out = set()
+    for _path, data in _list_session_files(sessions_dir):
+        sid = (data.get("session_id") or "").strip()
+        if sid and sid[:8].lower().startswith(partial.lower()):
+            out.add(sid[:8])
+    return sorted(out)
+
+
+def _completion_candidates(
+    buffer: str,
+    tools_dir: str = None,
+    loaded_modules: list = None,
+    sessions_dir: str = None,
+    list_models: callable = None,
+    skills_dir: str = None,
+) -> list:
     """Compute Tab-completion candidates for a raw input line.
 
     Pure function (no readline dependency) so it can be unit-tested:
-    commands on the first word, subcommands on the first argument, and
-    file paths for commands that take a path argument.
+    commands on the first word, subcommands on the first argument, file
+    paths for path arguments, toolset names for the /tools subcommands
+    (scanned from the tools directory / the loaded-tool module names),
+    saved-session titles/ids for /resume, installed model names for
+    /model, skill names for /skill load, session selectors for /sessions
+    rm, session id prefixes for /rename, and on/off/undo values for
+    /context, /compact auto and /cut.
     """
     stripped = buffer.lstrip()
     if not stripped:
@@ -360,8 +574,8 @@ def _completion_candidates(buffer: str) -> list:
 
     arg_index = len(tokens) if trailing_space else len(tokens) - 1
 
-    if arg_index == 1 and head in _COMMAND_SUBCOMMANDS:
-        subs = [s for s in _COMMAND_SUBCOMMANDS[head] if s.startswith(partial)]
+    if arg_index == 1 and head in _SUBCOMMAND_HANDLERS:
+        subs = [s for s in _SUBCOMMAND_HANDLERS[head] if s.startswith(partial)]
         if head == "/systemprompt":
             for f in _complete_file_path(partial):
                 if f not in subs:
@@ -371,27 +585,151 @@ def _completion_candidates(buffer: str) -> list:
     if head in _PATH_COMMANDS and arg_index == 1:
         return _complete_file_path(partial)
 
-    if head == "/skill" and arg_index == 2 and tokens[1].lower() == "load":
-        return _complete_file_path(partial)
+    if head == "/tools" and arg_index >= 2:
+        sub = tokens[1].lower()
+        if sub in _TOOLS_SUBCOMMANDS:
+            kind = _TOOLS_SUBCOMMANDS[sub][1]
+            if kind == "toolset":
+                return _complete_toolset_module(partial, tools_dir)
+            if kind == "loaded_toolset":
+                names = []
+                for m in (loaded_modules or []):
+                    parts = m.split(".")
+                    names.append(parts[-1] if len(parts) == 2 else m)
+                out = []
+                for s in names:
+                    if s.startswith(partial) or s.rsplit(".", 1)[-1].startswith(partial):
+                        out.append(s)
+                return out
+
+    if head == "/skill" and arg_index == 2:
+        sub = tokens[1].lower()
+        if sub in _SKILL_SUBCOMMANDS and _SKILL_SUBCOMMANDS[sub][1] == "path":
+            return _skill_load_completion_candidates(skills_dir, partial)
 
     if head == "/systemprompt" and arg_index >= 2:
         return _complete_file_path(partial)
 
+    if head == "/resume" and arg_index >= 1:
+        return _session_completion_candidates(sessions_dir, partial)
+
+    if head == "/model" and arg_index == 1:
+        return _model_completion_candidates(list_models, partial)
+
+    if head == "/sessions" and arg_index >= 2 and tokens[1].lower() == "rm":
+        return _sessions_rm_completion_candidates(sessions_dir, partial)
+
+    if head == "/rename" and arg_index == 1:
+        return _session_id_prefix_completion_candidates(sessions_dir, partial)
+
+    if head == "/context" and arg_index == 1:
+        return [v for v in ("on", "off") if v.startswith(partial)]
+
+    if head == "/compact" and arg_index >= 2 and tokens[1].lower() == "auto":
+        return [v for v in ("on", "off") if v.startswith(partial)]
+
+    if head == "/cut" and arg_index == 1:
+        return [v for v in ("undo",) if v.startswith(partial)]
+
     return []
 
 
-def _complete(text: str, state: int):
-    """readline completer callback, driven by the current line buffer."""
-    if readline is None:
-        return None
-    matches = _completion_candidates(readline.get_line_buffer())
-    return matches[state] if state < len(matches) else None
+def _maybe_append_completion_space(buffer: str, matches: list) -> list:
+    """Append a trailing space to the sole completion of a command word,
+    subcommand word, or toolset-name argument so the next Tab reaches the
+    next completion level.
+
+    Pure and readline-free. Because space is a readline delimiter, GNU
+    readline never appends a trailing space itself, so a completed command
+    would otherwise stall on the same branch. Ambiguous matches (len != 1)
+    and file-path completions are returned unchanged: appending a space to
+    every match of a shared prefix would silently commit readline to the
+    common prefix (e.g. ``load`` for ``load``/``loaded``).
+    """
+    if len(matches) != 1:
+        return matches
+    stripped = buffer.lstrip()
+    if not stripped:
+        return matches
+    trailing_space = stripped[-1] in " \t"
+    tokens = stripped.split()
+    head = tokens[0].lower()
+    arg_index = len(tokens) if trailing_space else len(tokens) - 1
+    match = matches[0]
+
+    if len(tokens) == 1 and not trailing_space and head.startswith("/"):
+        return [match + " "]
+
+    if arg_index == 1 and head in _SUBCOMMAND_HANDLERS:
+        if head == "/systemprompt" and match not in _SUBCOMMAND_HANDLERS[head]:
+            return matches
+        return [match + " "]
+
+    if (
+        head == "/tools"
+        and arg_index >= 2
+        and tokens[1].lower() in _TOOLS_SUBCOMMANDS
+    ):
+        kind = _TOOLS_SUBCOMMANDS[tokens[1].lower()][1]
+        if kind in ("toolset", "loaded_toolset"):
+            if match.endswith("."):
+                return matches
+            return [match + " "]
+
+    if head == "/resume" and arg_index >= 1:
+        return [match + " "]
+
+    if head == "/model" and arg_index == 1:
+        return [match + " "]
+
+    if head == "/context" and arg_index == 1:
+        return [match + " "]
+
+    if head == "/cut" and arg_index == 1:
+        return [match + " "]
+
+    if head == "/rename" and arg_index == 1:
+        return [match + " "]
+
+    if head == "/compact" and arg_index >= 2 and tokens[1].lower() == "auto":
+        return [match + " "]
+
+    if head == "/sessions" and arg_index >= 2 and tokens[1].lower() == "rm":
+        return [match + " "]
+
+    if head == "/skill" and arg_index == 2 and tokens[1].lower() == "load":
+        if match.endswith("/"):
+            return matches
+        return [match + " "]
+
+    return matches
 
 
-def _install_readline_completion() -> None:
-    """Enable Tab completion for commands, subcommands and file paths."""
+def _install_readline_completion(state=None) -> None:
+    """Enable Tab completion for commands, subcommands, toolsets and file paths.
+
+    The completer is a closure over the live ChatState so ``/tools load``
+    completion sees newly created tool modules and newly loaded toolsets
+    without re-installing the binding.
+    """
     if readline is None:
         return
+
+    model_lister = _make_model_lister(state)
+
+    def _complete(text: str, index: int):
+        line = readline.get_line_buffer()
+        matches = _completion_candidates(
+            line,
+            getattr(state, "tools_dir", None),
+            getattr(state, "loaded_tool_modules", []),
+            getattr(state, "sessions_dir", None),
+            list_models=model_lister,
+            skills_dir=getattr(state, "skills_dir", None),
+        )
+        matches = _maybe_append_completion_space(line, matches)
+        return matches[index] if index < len(matches) else None
+
     readline.set_completer(_complete)
     readline.set_completer_delims(" \t\n")
     if "libedit" in (readline.__doc__ or ""):
@@ -1046,7 +1384,7 @@ def _rollback_interrupted_turn(state, e, user_msg, messages_before):
 
 def run_chat(state: ChatState):
     print("Chat mode. Type /help for commands.")
-    _install_readline_completion()
+    _install_readline_completion(state)
     _install_bracketed_paste()
     _bind_mode_toggle(state)
     _install_typeahead_replay(state)
@@ -1164,96 +1502,49 @@ def _handle_command(line: str, state: ChatState) -> bool:
     cmd = parts[0].lower()
     arg = parts[1] if len(parts) > 1 else ""
 
-    if cmd in ("/exit", "/quit"):
-        return True
-
-    elif cmd == "/help":
-        _show_help()
-
-    elif cmd == "/new":
-        if _has_conversation(state):
-            autosave_session(state)
-        state.messages.clear()
-        state.ctx_usage = None
-        state.session_id = new_session_id()
-        state.session_created_at = time.time()
-        state.stats_by_model.clear()
-        print("New session started. Previous session preserved; use /resume to restore it.")
-
-    elif cmd == "/compact":
-        sub = arg.strip().lower()
-        if not sub:
-            run_compaction(state, confirm=True)
-        elif sub == "auto" or sub.startswith("auto "):
-            _cmd_compact_auto(sub.split(maxsplit=1)[1] if sub != "auto" else "", state)
-        else:
-            print("Usage: /compact [auto on|off]")
-            print("  /compact          Compact the context now (ask for confirmation)")
-            print("  /compact auto     Show whether auto-compaction is enabled")
-            print("  /compact auto on  Enable auto-compaction on threshold crossing")
-            print("  /compact auto off Disable auto-compaction")
-
-    elif cmd == "/feed":
-        _cmd_feed(arg, state)
-
-    elif cmd == "/model":
-        if not arg:
-            print(f"Current model: {state.model}")
-        else:
-            state.model = arg
-            if state.ctx_usage and state.ctx_usage_model and state.ctx_usage_model != arg:
-                state.ctx_usage = dict(state.ctx_usage)
-                state.ctx_usage["_estimated"] = True
-                state.ctx_usage_model = arg
-            autosave_session(state)
-            print(f"Switched to model: {arg}")
-
-    elif cmd == "/plan":
-        _set_mode(state, "plan")
-
-    elif cmd == "/build":
-        _set_mode(state, "build")
-
-    elif cmd == "/save":
-        _cmd_save(arg, state)
-
-    elif cmd == "/load":
-        _cmd_load(arg, state)
-
-    elif cmd == "/resume":
-        _cmd_resume(arg, state)
-
-    elif cmd == "/sessions":
-        _cmd_sessions(arg, state)
-
-    elif cmd == "/stats":
-        _cmd_stats(state)
-
-    elif cmd == "/rename":
-        _cmd_rename(arg, state)
-
-    elif cmd == "/tools":
-        _cmd_tools(arg, state)
-
-    elif cmd == "/skill":
-        _cmd_skill(arg, state)
-
-    elif cmd == "/systemprompt":
-        _cmd_systemprompt(arg, state)
-
-    elif cmd == "/context":
-        _cmd_context(arg, state)
-
-    elif cmd == "/history":
-        _cmd_history(arg, state)
-
-    elif cmd == "/cut":
-        _cmd_cut(arg, state)
-
-    else:
+    handler = _COMMAND_HANDLERS.get(cmd)
+    if handler is None:
         print(f"Unknown command: {cmd}. Type /help for available commands.")
+        return False
+    return bool(handler(arg, state))
 
-    return False
+
+def _cmd_new(arg: str, state: ChatState):
+    if _has_conversation(state):
+        autosave_session(state)
+    state.messages.clear()
+    state.ctx_usage = None
+    state.session_id = new_session_id()
+    state.session_created_at = time.time()
+    state.stats_by_model.clear()
+    print("New session started. Previous session preserved; use /resume to restore it.")
+
+
+def _cmd_model(arg: str, state: ChatState):
+    if not arg:
+        print(f"Current model: {state.model}")
+    else:
+        state.model = arg
+        if state.ctx_usage and state.ctx_usage_model and state.ctx_usage_model != arg:
+            state.ctx_usage = dict(state.ctx_usage)
+            state.ctx_usage["_estimated"] = True
+            state.ctx_usage_model = arg
+        autosave_session(state)
+        print(f"Switched to model: {arg}")
+
+
+def _cmd_compact(arg: str, state: ChatState):
+    sub = arg.strip().lower()
+    if not sub:
+        run_compaction(state, confirm=True)
+    elif sub == "auto" or sub.startswith("auto "):
+        _cmd_compact_auto(sub.split(maxsplit=1)[1] if sub != "auto" else "", state)
+    else:
+        print("Usage: /compact [auto on|off]")
+        print("  /compact          Compact the context now (ask for confirmation)")
+        print("  /compact auto     Show whether auto-compaction is enabled")
+        print("  /compact auto on  Enable auto-compaction on threshold crossing")
+        print("  /compact auto off Disable auto-compaction")
 
 
 def _show_help():
@@ -1999,6 +2290,8 @@ def _cmd_resume(arg: str, state: ChatState):
 
     if arg:
         needle = arg.strip().lower()
+        if _RESUME_ANNOTATION_MARKER in needle:
+            needle = needle.split(_RESUME_ANNOTATION_MARKER)[0].strip()
         sessions = _list_session_files(state.sessions_dir)
         cands = [
             pd for pd in sessions
@@ -2047,7 +2340,18 @@ def _cmd_sessions(arg: str, state: ChatState):
         return
     groups = _collect_session_groups(state, all_projects=bool(arg))
     if not any(items for _label, items in groups):
-        print("No saved sessions.")
+        if arg:
+            print(f"No saved sessions in {state.sessions_dir}.")
+            return
+        total = len(_list_session_files(state.sessions_dir))
+        if total == 0:
+            print(f"No saved sessions in {state.sessions_dir}.")
+        else:
+            print(
+                f"No sessions saved in {os.getcwd()}. "
+                f"{total} session(s) found in other projects - "
+                "use /sessions all to list them."
+            )
         return
     _display_session_groups(groups, current_sid=state.session_id)
     _print_sessions_footer(groups, state)
@@ -2115,7 +2419,7 @@ def _cmd_sessions_rm(arg: str, state: ChatState):
     for _label, items in groups:
         ordered.extend(items)
     if not ordered:
-        print("No saved sessions.")
+        print(f"No saved sessions in {state.sessions_dir}.")
         return
     if not arg:
         _display_session_groups(groups, current_sid=state.session_id)
@@ -2293,59 +2597,70 @@ def _load_skill_texts(names: list, state: ChatState):
     return parts
 
 
+def _cmd_skill_list(state: ChatState):
+    files = _list_skill_files(state)
+    if not files:
+        print(f"No skills found in {_default_skills_dir(state)}")
+        return
+    print("Available skills:")
+    for f in files:
+        print(f"  {f}")
+
+
+def _cmd_skill_load(sub_arg: str, state: ChatState):
+    if not sub_arg:
+        print("Usage: /skill load <name-or-path> [<name-or-path> ...]")
+        return
+    names = sub_arg.strip().split()
+    texts = _load_skill_texts(names, state)
+    if texts is None:
+        return
+    combined = "\n\n".join(texts)
+    state.skill = " ".join(names)
+    state.skill_text = combined
+    state.apply_skill()
+    autosave_session(state)
+    print(f"Skill loaded: {' '.join(names)} ({len(combined)} characters)")
+
+
+def _cmd_skill_unload(state: ChatState):
+    if not state.skill_text:
+        print("No skill loaded.")
+        return
+    state.skill = None
+    state.skill_text = None
+    state.apply_skill()
+    autosave_session(state)
+    print("Skill unloaded.")
+
+
+def _cmd_skill_show(state: ChatState):
+    if not state.skill_text:
+        print("No skill loaded.")
+        return
+    print(f"Active skill: {state.skill or '(loaded via --skill)'}")
+    print("---")
+    print(state.skill_text)
+
+
+def _show_skill_usage():
+    print("Skill commands:")
+    print("  /skill list                              List available skills")
+    print("  /skill load <name-or-path> [<name-or-path> ...]  Load skill(s) into the system role")
+    print("  /skill unload                            Unload the active skill")
+    print("  /skill show                              Show the active skill")
+
+
 def _cmd_skill(arg: str, state: ChatState):
     parts = arg.strip().split(maxsplit=1)
     sub = parts[0].lower() if parts else ""
     sub_arg = parts[1] if len(parts) > 1 else ""
 
-    if sub == "list":
-        files = _list_skill_files(state)
-        if not files:
-            print(f"No skills found in {_default_skills_dir(state)}")
-            return
-        print("Available skills:")
-        for f in files:
-            print(f"  {f}")
-
-    elif sub == "load":
-        if not sub_arg:
-            print("Usage: /skill load <name-or-path> [<name-or-path> ...]")
-            return
-        names = sub_arg.strip().split()
-        texts = _load_skill_texts(names, state)
-        if texts is None:
-            return
-        combined = "\n\n".join(texts)
-        state.skill = " ".join(names)
-        state.skill_text = combined
-        state.apply_skill()
-        autosave_session(state)
-        print(f"Skill loaded: {' '.join(names)} ({len(combined)} characters)")
-
-    elif sub == "unload":
-        if not state.skill_text:
-            print("No skill loaded.")
-            return
-        state.skill = None
-        state.skill_text = None
-        state.apply_skill()
-        autosave_session(state)
-        print("Skill unloaded.")
-
-    elif sub == "show":
-        if not state.skill_text:
-            print("No skill loaded.")
-            return
-        print(f"Active skill: {state.skill or '(loaded via --skill)'}")
-        print("---")
-        print(state.skill_text)
-
-    else:
-        print("Skill commands:")
-        print("  /skill list                              List available skills")
-        print("  /skill load <name-or-path> [<name-or-path> ...]  Load skill(s) into the system role")
-        print("  /skill unload                            Unload the active skill")
-        print("  /skill show                              Show the active skill")
+    entry = _SKILL_SUBCOMMANDS.get(sub)
+    if entry is None:
+        _show_skill_usage()
+        return
+    entry[0](sub_arg, state)
 
 
 def _cmd_systemprompt(arg: str, state: ChatState):
@@ -2391,10 +2706,18 @@ def _resolve_toolset_module(name: str) -> str:
     """Map a user-supplied toolset name to an importable module name.
 
     Bare names (e.g. ``dev_tools``) resolve to the tools package first
-    (``tools.dev_tools``), falling back to a top-level module. Dotted names are
-    used as-is.
+    (``tools.dev_tools``), falling back to a top-level module. Dotted names
+    resolve inside the tools package first (``tools.<name>``, so subpackages
+    of ``tools/`` work), falling back to the dotted name as-is (sibling
+    packages like ``tools_security``).
     """
     if "." in name:
+        for c in (f"tools.{name}", name):
+            try:
+                if importlib.util.find_spec(c) is not None:
+                    return c
+            except (ImportError, ModuleNotFoundError, AttributeError):
+                continue
         return name
     candidates = [f"tools.{name}", name]
     for c in candidates:
@@ -2511,7 +2834,7 @@ def _tools_load(names: str, state: ChatState):
         if module_name in already:
             print(f"Toolset '{short}' is already loaded.")
             ok = False
-        elif short not in available:
+        elif "." not in name and short not in available:
             print(f"Error: unknown toolset '{name}'.")
             ok = False
         else:
@@ -2574,20 +2897,92 @@ def _cmd_tools(arg: str, state: ChatState):
     sub = parts[0].lower() if parts else ""
     sub_arg = parts[1] if len(parts) > 1 else ""
 
-    if sub == "":
+    if not sub:
         _show_tools_usage()
-    elif sub == "loaded":
-        _list_loaded_tools(state)
-    elif sub == "available":
-        _list_available_toolsets(state)
-    elif sub == "show":
-        _show_toolset(sub_arg, state)
-    elif sub == "all":
-        _list_all_tools(state)
-    elif sub == "load":
-        _tools_load(sub_arg, state)
-    elif sub == "unload":
-        _tools_unload(sub_arg, state)
-    else:
+        return
+    entry = _TOOLS_SUBCOMMANDS.get(sub)
+    if entry is None:
         print(f"Unknown /tools subcommand: {sub}")
         _show_tools_usage()
+        return
+    entry[0](sub_arg, state)
+
+
+# ---------------------------------------------------------------------------
+# Data-driven dispatch + completion registry
+#
+# _handle_command, _cmd_tools and _cmd_skill dispatch through the tables below,
+# and Tab completion (/_completion_candidates, /_maybe_append_completion_space)
+# reads the SAME tables — a command or subcommand is registered exactly once.
+# Keep insertion order: _COMMANDS order == the completion order.
+# ---------------------------------------------------------------------------
+
+
+_COMMAND_HANDLERS = {
+    "/feed": _cmd_feed,
+    "/new": _cmd_new,
+    "/compact": _cmd_compact,
+    "/model": _cmd_model,
+    "/plan": lambda _a, s: _set_mode(s, "plan"),
+    "/build": lambda _a, s: _set_mode(s, "build"),
+    "/save": _cmd_save,
+    "/load": _cmd_load,
+    "/resume": _cmd_resume,
+    "/sessions": _cmd_sessions,
+    "/stats": lambda _a, s: _cmd_stats(s),
+    "/rename": _cmd_rename,
+    "/tools": _cmd_tools,
+    "/skill": _cmd_skill,
+    "/systemprompt": _cmd_systemprompt,
+    "/context": _cmd_context,
+    "/history": _cmd_history,
+    "/cut": _cmd_cut,
+    "/help": lambda _a, _s: _show_help(),
+    "/exit": lambda _a, _s: True,
+    "/quit": lambda _a, _s: True,
+}
+
+_COMMANDS = list(_COMMAND_HANDLERS)
+
+
+_TOOLS_SUBCOMMANDS = {
+    "loaded":    (lambda _a, s: _list_loaded_tools(s), None),
+    "available": (lambda _a, s: _list_available_toolsets(s), None),
+    "show":      (_show_toolset, "toolset"),
+    "all":       (lambda _a, s: _list_all_tools(s), None),
+    "load":      (_tools_load, "toolset"),
+    "unload":    (_tools_unload, "loaded_toolset"),
+}
+
+_SKILL_SUBCOMMANDS = {
+    "list":   (lambda _a, s: _cmd_skill_list(s), None),
+    "load":   (_cmd_skill_load, "path"),
+    "unload": (lambda _a, s: _cmd_skill_unload(s), None),
+    "show":   (lambda _a, s: _cmd_skill_show(s), None),
+}
+
+# /compact, /systemprompt and /sessions keep bespoke dispatch (bare /compact
+# runs a compaction, /systemprompt <file> loads a prompt file, /sessions
+# handles rm/all/-a/--all itself) — the tables below are completion metadata
+# only, documented exceptions to the table-driven rule.
+_COMPACT_SUBCOMMANDS = {
+    "auto": (_cmd_compact_auto, None),
+}
+_SYSTEMPROMPT_SUBCOMMANDS = {
+    "show":  (lambda _a, s: _cmd_systemprompt("show", s), None),
+    "unset": (lambda _a, s: _cmd_systemprompt("unset", s), None),
+}
+_SESSIONS_SUBCOMMANDS = {
+    "all": (lambda _a, s: _cmd_sessions("all", s), None),
+    "rm":  (_cmd_sessions_rm, None),
+}
+
+_SUBCOMMAND_HANDLERS = {
+    "/compact": _COMPACT_SUBCOMMANDS,
+    "/tools": _TOOLS_SUBCOMMANDS,
+    "/skill": _SKILL_SUBCOMMANDS,
+    "/systemprompt": _SYSTEMPROMPT_SUBCOMMANDS,
+    "/sessions": _SESSIONS_SUBCOMMANDS,
+}
+
+_COMMAND_SUBCOMMANDS = {head: list(t) for head, t in _SUBCOMMAND_HANDLERS.items()}

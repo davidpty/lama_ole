@@ -1,3 +1,4 @@
+import ast
 import importlib
 import os
 import sys
@@ -56,11 +57,42 @@ def load_tools(module_name: str) -> List[Tool]:
     return tools
 
 
-def get_available_toolsets(tools_dir: Optional[str] = None) -> List[str]:
+def module_file_has_tools(path: str) -> bool:
+    """Whether a module file is a tool module, by AST inspection.
+
+    A module is a tool module when it imports the ``tool`` decorator from
+    ``tool_base`` (the pattern every tool module uses). This is a cheap,
+    side-effect-free check (never imports the file) used by Tab completion so
+    only modules that actually export ``@tool`` functions are offered. Files
+    that are unreadable or fail to parse are treated as non-tool modules.
+    """
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            tree = ast.parse(f.read(), filename=path)
+    except (OSError, SyntaxError, UnicodeDecodeError):
+        return False
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.ImportFrom):
+            continue
+        mod = node.module or ""
+        if mod != "tool_base" and not mod.startswith("tool_base."):
+            continue
+        for alias in node.names:
+            if alias.name == "tool":
+                return True
+    return False
+
+
+def get_available_toolsets(
+    tools_dir: Optional[str] = None,
+    only_tool_modules: bool = False,
+) -> List[str]:
     """Module names loadable via the REPL, i.e. ``*.py`` in the tools package.
 
     ``tools_dir`` overrides the default ``lama_ole/tools`` directory (used by
     tests). Private files (leading underscore) and ``__init__.py`` are skipped.
+    With ``only_tool_modules`` set, names whose file is not a tool module (see
+    :func:`module_file_has_tools`) are skipped as well.
     """
     if tools_dir is None:
         tools_dir = _TOOLS_PACKAGE_DIR
@@ -71,6 +103,10 @@ def get_available_toolsets(tools_dir: Optional[str] = None) -> List[str]:
         if f.startswith("_") or f == "__init__.py":
             continue
         if f.endswith(".py"):
+            if only_tool_modules and not module_file_has_tools(
+                os.path.join(tools_dir, f)
+            ):
+                continue
             names.append(f[:-3])
     return names
 

@@ -382,6 +382,13 @@ class SessionStoreTest(unittest.TestCase):
             chat._cmd_resume("nope", state2)
         self.assertIn("No session matching", buf.getvalue())
 
+    def test_resume_annotated_needle_strips_marker(self):
+        self._write_session("s1", cwd="/other/proj")
+        state2 = _make_state(sessions_dir=self.sessions_dir)
+        annotated = f"s1  {chat._RESUME_ANNOTATION_MARKER}  /other/proj"
+        chat._cmd_resume(annotated, state2)
+        self.assertEqual(state2.session_id, "s1")
+
     def test_sessions_lists(self):
         self._write_session("s1")
         out = self._sessions_output("")
@@ -439,6 +446,19 @@ class SessionStoreTest(unittest.TestCase):
         self._write_session("s1")
         out = self._sessions_output("bogus")
         self.assertIn("Usage: /sessions", out)
+
+    def test_sessions_empty_dir_message(self):
+        out = self._sessions_output("")
+        self.assertIn(f"No saved sessions in {self.sessions_dir}.", out)
+        out_all = self._sessions_output("all")
+        self.assertIn(f"No saved sessions in {self.sessions_dir}.", out_all)
+
+    def test_sessions_empty_current_dir_points_to_all(self):
+        self._write_session("s1", cwd="/other/proj")
+        out = self._sessions_output("")
+        self.assertIn("No sessions saved in", out)
+        self.assertIn("1 session(s) found in other projects", out)
+        self.assertIn("/sessions all", out)
 
     def test_sessions_rm_by_number(self):
         self._write_session("s1", updated=1000)

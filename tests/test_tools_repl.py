@@ -71,6 +71,38 @@ def fake_tools_dir():
     shutil.rmtree(tmp, ignore_errors=True)
 
 
+@pytest.fixture()
+def fake_pkg_tools_dir():
+    """A temp dir on sys.path with a sibling package containing tool modules.
+
+    Each test gets a uniquely named package (uuid) so re-imports never collide
+    in the global module/registry state. Mirrors a top-level package like
+    ``tools_security`` sitting next to the ``tools`` directory: modules are
+    importable via dotted names (``<pkg>.db_tools``, ``<pkg>.sub.deep_tools``).
+    Yields ``(tmp, pkg_name)``.
+    """
+    tmp = tempfile.mkdtemp()
+    pkg = f"mycompany{uuid.uuid4().hex[:8]}"
+    sys.path.insert(0, tmp)
+    for rel in (pkg, os.path.join(pkg, "sub")):
+        os.makedirs(os.path.join(tmp, rel), exist_ok=True)
+        with open(os.path.join(tmp, rel, "__init__.py"), "w", encoding="utf-8") as f:
+            f.write("")
+    with open(
+        os.path.join(tmp, pkg, "db_tools.py"), "w", encoding="utf-8"
+    ) as f:
+        f.write(MODULE_GOOD)
+    with open(
+        os.path.join(tmp, pkg, "sub", "deep_tools.py"),
+        "w",
+        encoding="utf-8",
+    ) as f:
+        f.write(MODULE_GREET)
+    yield tmp, pkg
+    sys.path.remove(tmp)
+    shutil.rmtree(tmp, ignore_errors=True)
+
+
 def make_state(tools_dir):
     state = chat.ChatState(client=None, model="test")
     state.tools_dir = tools_dir
@@ -194,6 +226,57 @@ def test_tools_load_import_error_rolls_back(fake_tools_dir, capsys):
     assert "boom" in out or "Error loading toolset" in out
     assert state.loaded_tool_modules == []
     assert state.loaded_tools == []
+    assert state.ollama_tools is None
+
+
+def test_tools_load_dotted_sibling_package(fake_pkg_tools_dir, capsys):
+    tmp, pkg = fake_pkg_tools_dir
+    state = make_state(tmp)
+    chat._cmd_tools(f"load {pkg}.db_tools", state)
+    out = capsys.readouterr().out
+    assert "Loaded toolset(s): db_tools" in out
+    assert state.loaded_tool_modules == [f"{pkg}.db_tools"]
+    assert sorted(t.name for t in state.loaded_tools) == ["add", "mul"]
+    assert len(state.ollama_tools) == 2
+
+
+def test_tools_load_dotted_nested_subpackage(fake_pkg_tools_dir, capsys):
+    tmp, pkg = fake_pkg_tools_dir
+    state = make_state(tmp)
+    chat._cmd_tools(f"load {pkg}.sub.deep_tools", state)
+    out = capsys.readouterr().out
+    assert "Loaded toolset(s): deep_tools" in out
+    assert state.loaded_tool_modules == [f"{pkg}.sub.deep_tools"]
+    assert sorted(t.name for t in state.loaded_tools) == ["greet"]
+    assert len(state.ollama_tools) == 1
+
+
+def test_resolve_toolset_module_dotted_fallback(fake_pkg_tools_dir):
+    tmp, pkg = fake_pkg_tools_dir
+    assert chat._resolve_toolset_module(f"{pkg}.db_tools") == f"{pkg}.db_tools"
+
+
+def test_tools_load_dotted_unknown_rolls_back(fake_pkg_tools_dir, capsys):
+    tmp, pkg = fake_pkg_tools_dir
+    state = make_state(tmp)
+    chat._cmd_tools(f"load {pkg}.db_tools", state)
+    capsys.readouterr()
+    chat._cmd_tools(f"load {pkg}.no_such_module", state)
+    out = capsys.readouterr().out
+    assert "Error loading toolset" in out
+    assert state.loaded_tool_modules == [f"{pkg}.db_tools"]
+    assert len(state.loaded_tools) == 2
+
+
+def test_tools_unload_dotted_module(fake_pkg_tools_dir, capsys):
+    tmp, pkg = fake_pkg_tools_dir
+    state = make_state(tmp)
+    chat._cmd_tools(f"load {pkg}.db_tools", state)
+    capsys.readouterr()
+    chat._cmd_tools(f"unload {pkg}.db_tools", state)
+    out = capsys.readouterr().out
+    assert "Unloaded toolset(s): db_tools" in out
+    assert state.loaded_tool_modules == []
     assert state.ollama_tools is None
 
 

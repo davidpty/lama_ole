@@ -55,7 +55,7 @@ class TestColored:
 class TestRunChatPromptColoring:
     def _capture_prompt(self, monkeypatch, state):
         captured = {}
-        monkeypatch.setattr(chat, "_install_readline_completion", lambda: None)
+        monkeypatch.setattr(chat, "_install_readline_completion", lambda state: None)
 
         def fake_input(prompt=""):
             captured["prompt"] = prompt
@@ -174,7 +174,7 @@ class TestConfigure:
 class TestRunChatConfiguredColor:
     def test_configured_prompt_color_used_by_run_chat(self, monkeypatch):
         monkeypatch.setattr(color_util, "C_PROMPT", "\x01\033[95m\x02")
-        monkeypatch.setattr(chat, "_install_readline_completion", lambda: None)
+        monkeypatch.setattr(chat, "_install_readline_completion", lambda state: None)
         captured = {}
 
         def fake_input(prompt=""):

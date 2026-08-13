@@ -81,6 +81,37 @@ lama_ole/
 
 ---
 
+### Tab Completion Registry (Mandatory)
+
+Dispatch and Tab completion share the same tables in `chat.py` — keep them in
+sync or both break (guard tests in `tests/test_chat_completion.py` enforce it):
+
+- New slash command → add `"/cmd": handler` to `_COMMAND_HANDLERS`; completion
+  and `/help` derive from it automatically.
+- New subcommand → add `"sub": (handler, arg_kind)` to the command's
+  `_*_SUBCOMMANDS` table; arg_kind is None (terminal), "toolset",
+  "loaded_toolset", or "path".
+- New tool module in `tools/` needs nothing — `/tools load` completion lists
+  toolsets by scanning the directory. Never hardcode the toolset list.
+- `toolset`-kind completion (`_complete_toolset_module`) browses package
+  directories: bare names resolve in `tools/`, `tools.<pkg>.<mod>` descends
+  into subpackages of `tools/`, and `<pkg>.<mod>` resolves a sibling package
+  at the same level as `tools/` (e.g. `tools_security`). Only modules that
+  import `@tool` from `tool_base` are offered (AST check,
+  `module_file_has_tools`); packages complete with a trailing dot so Tab keeps
+  descending.
+- Argument completion lives in `_completion_candidates` (pure function; see its
+  docstring). Beyond the table-driven subcommands it covers: file paths for
+  `_PATH_COMMANDS`; `/model` names via an injected `list_models` callable
+  (`_make_model_lister` caches `client.list()` for a short TTL and returns `[]`
+  on failure); `/skill load` skill stems merged with file paths
+  (`_skill_load_completion_candidates`); `/sessions rm` `all` + session numbers
+  (`_sessions_rm_completion_candidates`); `/rename` session-id prefixes
+  (`_session_id_prefix_completion_candidates`); and `on`/`off`/`undo` values
+  for `/context`, `/compact auto` and `/cut`.
+
+---
+
 ### Running the Tests
 
 The suite in `tests/` mixes **pytest-style** and **unittest-style** files (see
