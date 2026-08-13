@@ -1,9 +1,9 @@
 """Backend router: dispatches every call to Ollama or llama.cpp.
 
 The router keeps one client per backend and selects the target by parsing the
-model's namespace (:mod:`.names`). Backend reachability is probed lazily and
-cached for a short TTL, so an unavailable server is simply absent from the
-merged listing instead of producing errors.
+model's display prefix (``ollama:`` / ``llamacpp:``). Backend reachability is
+probed lazily and cached for a short TTL, so an unavailable server is simply
+absent from the merged listing instead of producing errors.
 """
 
 import time
@@ -86,10 +86,15 @@ class RouterClient(ModelClient):
             except Exception:
                 continue
             for m in resp.models:
+                bare = m.model
+                # with_prefix() is idempotent: no warning/warn if already has prefix,
+                # adds prefix if bare. Since router knows which backend each list came from,
+                # this correctly sets the display prefix.
+                prefixed = names.with_prefix_silent(bare, backend=backend)
                 models.append(
                     ModelEntry(
-                        model="%s.%s" % (backend, m.model),
-                        name=m.name or m.model,
+                        model=prefixed,
+                        name=prefixed,
                         context_length=m.context_length,
                     )
                 )
@@ -147,4 +152,8 @@ class RouterClient(ModelClient):
             return None
         if not resp.models:
             return None
-        return "llamacpp.%s" % resp.models[0].model
+        bare = resp.models[0].model
+        # with_prefix() is idempotent — no warning if already has prefix,
+        # adds prefix if bare. Internal model IDs from llama.cpp may already
+        # have 'llamacpp:' prefix; this ensures correct output.
+        return names.with_prefix_silent(bare, backend="llamacpp")

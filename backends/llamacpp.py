@@ -25,7 +25,6 @@ from types import SimpleNamespace
 from typing import Optional, List
 
 from .base import ListResponse, ModelClient, ModelEntry, StreamChunk, StreamMessage
-from .names import _display_id
 from .sse import iter_sse_events
 
 
@@ -341,7 +340,7 @@ class LlamaCppClient(ModelClient):
         models = []
         for m in data.get("data", []) or []:
             ident = m.get("id") or ""
-            models.append(ModelEntry(model=_display_id(ident), name=ident))
+            models.append(ModelEntry(model=ident, name=ident))
         return ListResponse(models=models)
 
     def ps(self):
@@ -354,11 +353,9 @@ class LlamaCppClient(ModelClient):
         models = []
         for slot in slots if isinstance(slots, list) else []:
             ident = slot.get("model", "") or ""
-            if not ident:
-                continue
             models.append(
                 ModelEntry(
-                    model=_display_id(ident),
+                    model=ident,
                     name=ident,
                     context_length=slot.get("n_ctx"),
                 )

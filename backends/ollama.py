@@ -36,14 +36,14 @@ class OllamaClient(ModelClient):
 
     def list(self):
         resp = self._client.list()
-        models = [
-            ModelEntry(
-                model=getattr(m, "model", None) or "",
-                name=getattr(m, "name", "") or "",
+        models = []
+        for m in getattr(resp, "models", []) or []:
+            bare = getattr(m, "model", None) or ""
+            models.append(ModelEntry(
+                model=bare,
+                name=bare,
                 context_length=getattr(m, "context_length", None),
-            )
-            for m in getattr(resp, "models", []) or []
-        ]
+            ))
         return ListResponse(models=models)
 
     def ps(self):

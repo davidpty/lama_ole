@@ -26,6 +26,7 @@ from backends import (  # noqa: E402
     canonicalize,
     parse_model,
     create_router,
+    strip_prefix,
 )
 from backends.llamacpp import LlamaCppClient  # noqa: E402
 from backends.ollama import OllamaClient  # noqa: E402
@@ -45,11 +46,11 @@ from tests.fakes.fake_llama_server import (  # noqa: E402
 
 def test_parse_model_table():
     cases = [
-        ("gemma2:2b", ("ollama", "gemma2:2b")),
-        ("ollama.gemma2:2b", ("ollama", "gemma2:2b")),
-        ("llamacpp.my-model", ("llamacpp", "my-model")),
-        ("/models/qwen.gguf", ("llamacpp", "qwen.gguf")),
-        ("llamacpp.qwen2.5-7b-q4_k_m.gguf", ("llamacpp", "qwen2.5-7b-q4_k_m.gguf")),
+        ("ollama:gemma2:2b", ("ollama", "gemma2:2b")),
+        ("llamacpp:my-model", ("llamacpp", "my-model")),
+        ("ollama:gemma2:2b", ("ollama", "gemma2:2b")),
+        ("llamacpp:qwen.gguf", ("llamacpp", "qwen.gguf")),
+        ("ollama:gemma2:2b", ("ollama", "gemma2:2b")),
         (None, (None, None)),
     ]
     for name, expected in cases:
@@ -57,10 +58,16 @@ def test_parse_model_table():
 
 
 def test_canonicalize_forms():
-    assert canonicalize("gemma2:2b") == "ollama.gemma2:2b"
-    assert canonicalize("ollama.gemma2:2b") == "ollama.gemma2:2b"
-    assert canonicalize("llamacpp.my-model") == "llamacpp.my-model"
-    assert canonicalize("/models/qwen.gguf") == "llamacpp.qwen.gguf"
+    assert canonicalize("gemma2:2b") == "ollama:gemma2:2b"
+    assert canonicalize("ollama:gemma2:2b") == "ollama:gemma2:2b"
+    assert canonicalize("llamacpp:my-model") == "llamacpp:my-model"
+    assert canonicalize("qwen.gguf") == "ollama:qwen.gguf"  # bare defaults to ollama with warning
+
+
+def test_strip_prefix():
+    assert strip_prefix("ollama:gemma2:2b") == "gemma2:2b"
+    assert strip_prefix("llamacpp:ggml-org/Qwen:Q4_K_M") == "ggml-org/Qwen:Q4_K_M"
+    assert strip_prefix("gemma2:2b") == "gemma2:2b"  # idempotent
 
 
 # -- SSE parser --------------------------------------------------------------
@@ -218,14 +225,15 @@ def test_show_swallows_props_failure():
 def test_router_merged_list_namespaced():
     stream = sse_body(content_chunk("ok"), final_chunk())
     with FakeLlamaServer(
-        models=["q.gguf"], n_ctx=4096, slots=[], streams=[stream]
+        models=["llamacpp:q.gguf"], n_ctx=4096, slots=[], streams=[stream]
     ) as server:
         router = create_router(
             ollama_host="http://127.0.0.1:1", llamacpp_host=server.url
         )
         resp = router.list()
-        assert [m.model for m in resp.models] == ["llamacpp.q.gguf"]
-        assert router.canonicalize("q.gguf") == "llamacpp.q.gguf"
+        assert [m.model for m in resp.models] == ["llamacpp:q.gguf"]
+        assert router.canonicalize("q.gguf") == "ollama:q.gguf"
+        assert router.canonicalize("llamacpp:q.gguf") == "llamacpp:q.gguf"
 
 
 def test_router_routes_chat_to_llamacpp():
@@ -236,7 +244,7 @@ def test_router_routes_chat_to_llamacpp():
         )
         chunks = list(
             router.chat(
-                model="llamacpp.my-model",
+                model="llamacpp:my-model",
                 messages=[{"role": "user", "content": "hi"}],
             )
         )
@@ -247,13 +255,13 @@ def test_router_routes_chat_to_llamacpp():
 
 
 def test_router_resolve_default_model_llamacpp_only():
-    with FakeLlamaServer(models=["q.gguf"]) as server:
+    with FakeLlamaServer(models=["llamacpp:q.gguf"]) as server:
         router = create_router(
             ollama_host="http://127.0.0.1:1", llamacpp_host=server.url
         )
-        assert router.resolve_default_model() == "llamacpp.q.gguf"
-        assert router.supports_native_websearch("llamacpp.q.gguf") is False
-        assert router.supports_native_websearch("ollama.q") is True
+        assert router.resolve_default_model() == "llamacpp:q.gguf"
+        assert router.supports_native_websearch("llamacpp:q.gguf") is False
+        assert router.supports_native_websearch("ollama:q") is True
 
 
 def test_router_both_unreachable_resolve_none():
@@ -424,3 +432,5 @@ def test_ollama_client_delegation(monkeypatch):
     assert running.models[0].context_length == 2048
     assert client.stop("q:1") is True
     assert sdk.generate_calls == [("q:1", 0)]
+
+# Note: OllamaClient.list() returns bare IDs; Router adds prefix via _merged()

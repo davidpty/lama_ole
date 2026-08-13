@@ -1,7 +1,7 @@
 """Model backends: Ollama and llama.cpp behind one router interface."""
 
 from .base import ListResponse, ModelClient, ModelEntry, StreamChunk, StreamMessage
-from .names import canonicalize, parse_model
+from .names import canonicalize, parse_model, strip_prefix
 from .router import RouterClient
 
 DEFAULT_OLLAMA_HOST = "http://localhost:11434"
@@ -25,6 +25,7 @@ __all__ = [
     "StreamMessage",
     "canonicalize",
     "parse_model",
+    "strip_prefix",
     "create_router",
     "RouterClient",
     "DEFAULT_OLLAMA_HOST",

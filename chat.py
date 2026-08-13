@@ -1939,6 +1939,10 @@ def apply_session(state: ChatState, data: dict, source: str = "session") -> None
         state.session_title = data["title"]
     if "model" in data:
         state.model = data["model"]
+        # Canonicalize to ensure prefix is present; this fixes old sessions with bare IDs
+        # and ensures autosave will save the prefixed version.
+        if hasattr(state.client, "canonicalize"):
+            state.model = state.client.canonicalize(state.model)
     stored_usage = data.get("ctx_usage")
     stored_usage_model = data.get("ctx_usage_model")
     if stored_usage and stored_usage.get("prompt_eval_count"):

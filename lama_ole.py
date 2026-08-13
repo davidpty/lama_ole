@@ -693,11 +693,8 @@ def _resume_session_into(state, resume):
     session_model = data.get("model")
     cli_model = state.model
     if cli_model and session_model:
-        if _same_model(cli_model, session_model, state.client):
-            data["model"] = cli_model
-        else:
-            # Session model always wins
-            data["model"] = session_model
+        # Session model always wins
+        data["model"] = session_model
     elif cli_model:
         data["model"] = cli_model
     apply_session(state, data, source=path)
