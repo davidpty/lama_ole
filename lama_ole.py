@@ -666,30 +666,6 @@ def _default_sessions_dir():
     return base
 
 
-def _prompt_model_choice(cli_model, session_model):
-    """Ask the user which model to keep when CLI and session disagree.
-
-    Returns one of "session", "cli", or "abort".
-    """
-    while True:
-        print(
-            f"The session uses model '{session_model}' but the CLI set "
-            f"'{cli_model}'.",
-            file=sys.stderr,
-        )
-        ans = input(
-            "Use the (s)ession model, the (c)li model, or (a)bort? [s/c/a]: "
-        ).strip().lower()
-        if ans in ("s", "session", ""):
-            return "session"
-        if ans in ("c", "cli"):
-            return "cli"
-        if ans in ("a", "abort"):
-            return "abort"
-        print("Please answer s, c or a.", file=sys.stderr)
-
-
-def _same_model(a, b, client):
     """True when two model ids refer to the same backend model.
 
     Bare names and their namespaced form compare equal
@@ -720,11 +696,8 @@ def _resume_session_into(state, resume):
         if _same_model(cli_model, session_model, state.client):
             data["model"] = cli_model
         else:
-            choice = _prompt_model_choice(cli_model, session_model)
-            if choice == "abort":
-                sys.exit(0)
-            if choice == "cli":
-                data["model"] = cli_model
+            # Session model always wins
+            data["model"] = session_model
     elif cli_model:
         data["model"] = cli_model
     apply_session(state, data, source=path)

@@ -91,6 +91,8 @@ class ChatState:
     ctx_compact: bool = False
     ctx_compact_threshold: float = DEFAULT_CTX_COMPACT_THRESHOLD
     ctx_compact_model: str = None
+    loaded_model: str = None
+    model_backend: str = "ollama"
     stats_by_model: dict = field(default_factory=dict)
     _hotkey_listener: object = None
     _last_cut_messages: list = field(default_factory=list)
@@ -1551,6 +1553,7 @@ def _cmd_model(arg: str, state: ChatState):
         canonicalize = getattr(state.client, "canonicalize", None)
         model = canonicalize(arg) if callable(canonicalize) else arg
         state.model = model
+        state.loaded_model = model
         if state.ctx_usage and state.ctx_usage_model and state.ctx_usage_model != model:
             state.ctx_usage = dict(state.ctx_usage)
             state.ctx_usage["_estimated"] = True
