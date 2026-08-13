@@ -494,26 +494,43 @@ def _model_completion_candidates(list_models: callable, partial: str) -> list:
     return [n for n in names if n.startswith(partial)]
 
 
+_SKILL_FILE_EXTENSIONS = (".md", ".txt")
+
+
+def _is_skill_path_candidate(candidate: str) -> bool:
+    """Keep directories and ``.md``/``.txt`` skill files from path completion.
+
+    Directories (trailing separator) are always kept so Tab keeps descending;
+    files are kept only when they are skill files and not private (``_``-prefixed).
+    """
+    if candidate.endswith(os.sep):
+        return True
+    base = os.path.basename(candidate)
+    return base.endswith(_SKILL_FILE_EXTENSIONS) and not base.startswith("_")
+
+
 def _skill_load_completion_candidates(skills_dir: str, partial: str) -> list:
     """Completion candidates for /skill load: skills-dir names plus file paths.
 
     Skill files are offered by their stem (``code-reviewer.md`` →
     ``code-reviewer``) because ``_resolve_skill_path`` accepts the bare name.
-    File-path candidates are merged in so arbitrary paths keep completing.
+    Bare names resolve against the skills directory; slash-form names are plain
+    file paths resolved against the working directory, so file-path candidates
+    are merged in and filtered to directories and ``.md``/``.txt`` skill files
+    (``dirname/`` + Tab shows the skills inside that directory).
     """
     out = []
     if skills_dir is None:
         skills_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "skills")
     if os.path.isdir(skills_dir):
         for name in sorted(os.listdir(skills_dir)):
-            full = os.path.join(skills_dir, name)
-            if not os.path.isfile(full) or name.startswith("_"):
+            if not name.endswith(_SKILL_FILE_EXTENSIONS) or name.startswith("_"):
                 continue
             stem = os.path.splitext(name)[0]
             if stem.startswith(partial):
                 out.append(stem)
     for f in _complete_file_path(partial):
-        if f not in out:
+        if _is_skill_path_candidate(f) and f not in out:
             out.append(f)
     return out
 

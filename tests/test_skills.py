@@ -348,6 +348,44 @@ class TestCmdSkill:
         assert state.skill == "s"
 
 
+class TestResolveSkillPath:
+    def test_bare_name_resolves_in_skills_dir(self, tmp_path, monkeypatch):
+        state, skills_dir = _make_chat_state(tmp_path)
+        _write_text(str(skills_dir / "code-reviewer.md"), "Review code carefully.")
+        monkeypatch.chdir(tmp_path)
+        assert (
+            chat._resolve_skill_path("code-reviewer", state)
+            == str(skills_dir / "code-reviewer.md")
+        )
+
+    def test_md_preferred_over_txt(self, tmp_path, monkeypatch):
+        state, skills_dir = _make_chat_state(tmp_path)
+        _write_text(str(skills_dir / "s.md"), "md")
+        _write_text(str(skills_dir / "s.txt"), "txt")
+        monkeypatch.chdir(tmp_path)
+        assert chat._resolve_skill_path("s", state) == str(skills_dir / "s.md")
+
+    def test_path_style_prefers_existing_cwd_file(self, tmp_path, monkeypatch):
+        state, skills_dir = _make_chat_state(tmp_path)
+        sub = tmp_path / "subdir"
+        sub.mkdir()
+        _write_text(str(sub / "web"), "cwd skill")
+        (skills_dir / "subdir").mkdir()
+        _write_text(str(skills_dir / "subdir" / "web.md"), "skills-dir skill")
+        monkeypatch.chdir(tmp_path)
+        assert chat._resolve_skill_path("subdir/web", state) == "subdir/web"
+
+    def test_path_style_falls_back_into_skills_dir(self, tmp_path, monkeypatch):
+        state, skills_dir = _make_chat_state(tmp_path)
+        (skills_dir / "subdir").mkdir()
+        _write_text(str(skills_dir / "subdir" / "web.md"), "skills-dir skill")
+        monkeypatch.chdir(tmp_path)
+        assert (
+            chat._resolve_skill_path("subdir/web", state)
+            == str(skills_dir / "subdir" / "web.md")
+        )
+
+
 class TestSkillPersistence:
     def test_save_load_persists_skill(self, tmp_path, capsys):
         state, _ = _make_chat_state(tmp_path)
