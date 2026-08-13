@@ -140,6 +140,64 @@ def _env_bool(name, default):
     return default
 
 
+def _deprecated_env(legacy_name, new_name):
+    """Print a migration warning for a still-honored legacy env var."""
+    print(
+        f"Warning: {legacy_name} is deprecated; use {new_name} instead.",
+        file=sys.stderr,
+    )
+
+
+def _ollama_host_env():
+    """Resolve the Ollama host from the environment.
+
+    ``LAMA_OLE_HOST_OLLAMA`` is the canonical variable. The legacy
+    ``LAMA_OLE_HOST`` is still honored so existing configs keep working.
+    """
+    value = os.environ.get("LAMA_OLE_HOST_OLLAMA")
+    if value:
+        return value
+    legacy = os.environ.get("LAMA_OLE_HOST")
+    if legacy:
+        _deprecated_env("LAMA_OLE_HOST", "LAMA_OLE_HOST_OLLAMA")
+        return legacy
+    return DEFAULT_OLLAMA_HOST
+
+
+def _llamacpp_host_env():
+    """Resolve the llama.cpp host from the environment.
+
+    ``LAMA_OLE_HOST_LLAMACPP`` is the canonical variable. The legacy
+    ``LAMA_OLE_LLAMACPP_HOST`` is still honored so existing configs keep
+    working.
+    """
+    value = os.environ.get("LAMA_OLE_HOST_LLAMACPP")
+    if value:
+        return value
+    legacy = os.environ.get("LAMA_OLE_LLAMACPP_HOST")
+    if legacy:
+        _deprecated_env("LAMA_OLE_LLAMACPP_HOST", "LAMA_OLE_HOST_LLAMACPP")
+        return legacy
+    return DEFAULT_LLAMACPP_HOST
+
+
+def _llamacpp_api_key_env():
+    """Resolve the llama.cpp API key (Bearer token) from the environment.
+
+    ``LAMA_OLE_HOST_LLAMACPP_API_KEY`` is the canonical variable. The legacy
+    ``LAMA_OLE_LLAMACPP_API_KEY`` is still honored so existing configs keep
+    working.
+    """
+    value = os.environ.get("LAMA_OLE_HOST_LLAMACPP_API_KEY")
+    if value:
+        return value
+    legacy = os.environ.get("LAMA_OLE_LLAMACPP_API_KEY")
+    if legacy:
+        _deprecated_env("LAMA_OLE_LLAMACPP_API_KEY", "LAMA_OLE_HOST_LLAMACPP_API_KEY")
+        return legacy
+    return None
+
+
 def _env_choice(name, default, choices):
     value = os.environ.get(name)
     if not value:
@@ -175,14 +233,14 @@ def build_parser():
         "--ollama-host", "--host",
         dest="ollama_host",
         type=str,
-        default=_env_str("LAMA_OLE_HOST", DEFAULT_OLLAMA_HOST),
+        default=_ollama_host_env(),
         help="The host of the Ollama instance (e.g. http://localhost:11434)"
     )
     parser.add_argument(
         "--llamacpp-host",
         dest="llamacpp_host",
         type=str,
-        default=_env_str("LAMA_OLE_LLAMACPP_HOST", DEFAULT_LLAMACPP_HOST),
+        default=_llamacpp_host_env(),
         help="The host of the llama.cpp llama-server (e.g. http://localhost:8080)"
     )
     parser.add_argument(
@@ -699,7 +757,7 @@ def main():
     client = create_router(
         ollama_host=ollama_host,
         llamacpp_host=llamacpp_host,
-        api_key=os.environ.get("LAMA_OLE_LLAMACPP_API_KEY"),
+        api_key=_llamacpp_api_key_env(),
     )
 
     # Propagate host and vision models to tools

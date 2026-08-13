@@ -202,7 +202,10 @@ class LlamaCppClient(ModelClient):
         choice = (data.get("choices") or [{}])[0]
         message = choice.get("message") or {}
         chunk = StreamChunk(
-            message=StreamMessage(content=message.get("content") or "")
+            message=StreamMessage(
+                content=message.get("content") or "",
+                thinking=message.get("reasoning_content") or "",
+            )
         )
         self._apply_usage(data, chunk, None)
         return chunk
@@ -282,14 +285,29 @@ class LlamaCppClient(ModelClient):
             )
         return out
 
-    def _make_chunk(self, msg, usage, timings, started):
-        prompt_eval_count = None
+    @staticmethod
+    def _usage_counts(usage, timings):
+        """Extract prompt/eval token counts.
+
+        The reference llama-server puts them in ``usage``
+        (``prompt_tokens``/``completion_tokens``); newer Ollama-registry
+        flavors only send ``timings`` with ``prompt_n``/``predicted_n``.
+        """
+        prompt = None
         eval_count = None
+        if usage:
+            prompt = usage.get("prompt_tokens")
+            eval_count = usage.get("completion_tokens")
+        if prompt is None and timings:
+            prompt = timings.get("prompt_n")
+        if eval_count is None and timings:
+            eval_count = timings.get("predicted_n")
+        return prompt, eval_count
+
+    def _make_chunk(self, msg, usage, timings, started):
+        prompt_eval_count, eval_count = self._usage_counts(usage, timings)
         prompt_eval_duration = None
         eval_duration = None
-        if usage:
-            prompt_eval_count = usage.get("prompt_tokens")
-            eval_count = usage.get("completion_tokens")
         if timings:
             if timings.get("prompt_ms"):
                 prompt_eval_duration = int(timings["prompt_ms"] * 1_000_000)
@@ -307,10 +325,8 @@ class LlamaCppClient(ModelClient):
 
     def _apply_usage(self, data, chunk, started):
         usage = data.get("usage") or {}
-        if usage:
-            chunk.prompt_eval_count = usage.get("prompt_tokens")
-            chunk.eval_count = usage.get("completion_tokens")
         timings = data.get("timings") or {}
+        chunk.prompt_eval_count, chunk.eval_count = self._usage_counts(usage, timings)
         if timings.get("prompt_ms"):
             chunk.prompt_eval_duration = int(timings["prompt_ms"] * 1_000_000)
         if timings.get("predicted_ms"):

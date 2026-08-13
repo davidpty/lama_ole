@@ -116,12 +116,14 @@ python3 lama_ole.py -m llamacpp.qwen2.5-7b-instruct-q4_k_m.gguf -i "Hello!"
 
 ### Hosts
 
-- `--ollama-host` / `--host` (env `LAMA_OLE_HOST`, default
-  `http://localhost:11434`) — the Ollama server.
-- `--llamacpp-host` (env `LAMA_OLE_LLAMACPP_HOST`, default
-  `http://localhost:8080`) — the llama.cpp `llama-server`.
-- `LAMA_OLE_LLAMACPP_API_KEY` — sent as a `Bearer` token if the server is
-  configured with an API key.
+- `--ollama-host` / `--host` (env `LAMA_OLE_HOST_OLLAMA`, default
+  `http://localhost:11434`) — the Ollama server. The legacy name
+  `LAMA_OLE_HOST` is still honored with a deprecation warning.
+- `--llamacpp-host` (env `LAMA_OLE_HOST_LLAMACPP`, default
+  `http://localhost:8080`) — the llama.cpp `llama-server`. The legacy name
+  `LAMA_OLE_LLAMACPP_HOST` is still honored with a deprecation warning.
+- `LAMA_OLE_HOST_LLAMACPP_API_KEY` — sent as a `Bearer` token if the server is
+  configured with an API key (legacy `LAMA_OLE_LLAMACPP_API_KEY` still honored).
 
 Both hosts can be set in the env file
 (`~/.config/lama_ole/lama_ole.env` or `./lama_ole.env`).
@@ -846,7 +848,9 @@ the configured default.
 
 | Variable | Type | Flag |
 | :--- | :--- | :--- |
-| `LAMA_OLE_HOST` | string | `--host` |
+| `LAMA_OLE_HOST_OLLAMA` | string | `--host` |
+| `LAMA_OLE_HOST_LLAMACPP` | string | `--llamacpp-host` |
+| `LAMA_OLE_HOST_LLAMACPP_API_KEY` | string | — (llama.cpp Bearer auth) |
 | `LAMA_OLE_MODEL` | string | `-m, --model` |
 | `LAMA_OLE_TEMPERATURE` | number | `--temperature` |
 | `LAMA_OLE_NUM_CTX` | integer | `--num_ctx` |
