@@ -234,6 +234,178 @@ def edit_range_based_file( path2edit: str, path2grep: str, pe_search_from: str =
     except Exception as e:
         return {"status": "error", "message": ["Error applying patch:", str(e)]}
 
+def _resolve_split_search_param(text: str, x1: str, x2: str, name: str):
+    """Resolve a split search parameter (name1 + name2) to a single match.
+
+    Returns None when both x1 and x2 are None (meaning start/end of file).
+    Otherwise returns (start, search_len, boundary), where boundary is the
+    split point between x1 and x2. Raises ValueError when the concatenated
+    string does not match exactly once in text.
+    """
+    if x1 is None and x2 is None:
+        return None
+    x1 = x1 or ""
+    x2 = x2 or ""
+    search = x1 + x2
+    count = text.count(search)
+    if count != 1:
+        raise ValueError("%s1+%s2 string matches not exactly 1 time : %d" % (name, name, count))
+    start = text.index(search)
+    return (start, len(search), start + len(x1))
+
+@tool(description="""Second form of edit_range_based_file where each search parameter is split into two parts. The concatenation of the X1 and X2 parts represents the search string X, and the split point between X1 and X2 marks the start (for the *_from parameters) or the end (for the *_to parameters) of the range. Replaces the range of text in 'path2edit' starting at the split point of 'pe_search_from1'+'pe_search_from2' and ending at the split point of 'pe_search_to1'+'pe_search_to2' with the corresponding range read from 'path2grep' (from the split point of 'pg_search_from1'+'pg_search_from2' to the split point of 'pg_search_to1'+'pg_search_to2'). All search strings are fixed strings and must each match exactly once, and the from/to strings must not overlap. If both parts of a parameter are None or not provided, the start of the corresponding file is meant for the *_from parameters and the end of the corresponding file for the *_to parameters; if only one part is None it is treated as an empty string.""")
+def edit_range_based_file2( path2edit: str, path2grep: str, pe_search_from1: str = None, pe_search_from2: str = None, pe_search_to1: str = None, pe_search_to2: str = None, pg_search_from1: str = None, pg_search_from2: str = None, pg_search_to1: str = None, pg_search_to2: str = None ) -> str:
+    # 1. Safety Checks
+
+    if not os.path.exists(path2edit):
+        return {"status": "error", "message": ["File", path2edit, "does not exist."]}
+
+    safety_error = _validate_path(path2edit)
+    if safety_error:
+        return {"status": "error", "message": [safety_error]}
+
+    if path2grep is None:
+        return {"status": "error", "message": ["Error: path2grep must be provided."]}
+
+    if not os.path.exists(path2grep):
+        return {"status": "error", "message": ["File", path2grep, "does not exist."]}
+
+    safety_error = _validate_path(path2grep)
+    if safety_error:
+        return {"status": "error", "message": [safety_error]}
+
+    # 2. Read original content of both files
+    with open(path2edit, "r", encoding="utf-8") as f:
+        original_text = f.read()
+
+    with open(path2grep, "r", encoding="utf-8") as f:
+        grep_text = f.read()
+
+    # 3. Locate the split search strings (each concatenation must match exactly once)
+    try:
+        pe_from = _resolve_split_search_param(original_text, pe_search_from1, pe_search_from2, "pe_search_from")
+        pe_to = _resolve_split_search_param(original_text, pe_search_to1, pe_search_to2, "pe_search_to")
+        pg_from = _resolve_split_search_param(grep_text, pg_search_from1, pg_search_from2, "pg_search_from")
+        pg_to = _resolve_split_search_param(grep_text, pg_search_to1, pg_search_to2, "pg_search_to")
+    except ValueError as e:
+        return {"status": "error", "message": ["Error:", str(e)]}
+
+    # 4. Search strings must not overlap
+    if pe_from is not None and pe_to is not None:
+        if pe_from[0] + pe_from[1] > pe_to[0]:
+            return {"status": "error", "message": ["Error: pe_search_from and pe_search_to overlap, or pe_search_from does not come before pe_search_to."]}
+
+    if pg_from is not None and pg_to is not None:
+        if pg_from[0] + pg_from[1] > pg_to[0]:
+            return {"status": "error", "message": ["Error: pg_search_from and pg_search_to overlap, or pg_search_from does not come before pg_search_to."]}
+
+    # 5. Compute the range boundaries (the split points between the X1 and X2 parts)
+    pe_from_boundary = 0 if pe_from is None else pe_from[2]
+    pe_to_boundary = len(original_text) if pe_to is None else pe_to[2]
+    pg_from_boundary = 0 if pg_from is None else pg_from[2]
+    pg_to_boundary = len(grep_text) if pg_to is None else pg_to[2]
+
+    # 6. Replace the edit range (pe_search_from2..pe_search_to1) with the grep range (pg_search_from2..pg_search_to1)
+    replace = grep_text[pg_from_boundary:pg_to_boundary]
+
+    edited_text = original_text[:pe_from_boundary] + replace + original_text[pe_to_boundary:]
+
+    try:
+        with open(path2edit, "w", encoding="utf-8") as f:
+            f.write( edited_text)
+        return {
+            "status": "success",
+            "data": f"Successfully applied patch to {path2edit}.",
+            "file": path2edit,
+            "diff": _unified_diff(original_text, edited_text, path2edit),
+        }
+
+    except Exception as e:
+        return {"status": "error", "message": ["Error applying patch:", str(e)]}
+
+@tool( """ 
+Replaces a specific text block in 'path2edit' with content extracted from 'path2grep'.
+The boundaries of the text blocks are defined by anchor strings split by a separator character (default: '|').
+
+CRITICAL RULES FOR APPLICATION:
+1. 'pe_search_from' ("A|B") anchors the start of the deletion in the target file. The full anchor string in the file is "AB". Deletion begins right AFTER 'A'.
+2. 'pe_search_to' ("C|D") anchors the end of the deletion. The full anchor string in the file is "CD". Deletion ends right BEFORE 'D'.
+3. 'pg_search_from' ("1|2") and 'pg_search_to' ("3|4") anchor the start and end of the source content to copy from 'path2grep' using the identical logic.
+
+CONCRETE EXAMPLE:
+Target file ('path2edit') contains: "Hello 123456789 World"
+Source file ('path2grep') contains: "Source alpha bravo xray yankee Omega"
+
+To replace "2345678" with "bravo xray":
+- Set sep = '|'
+- Set pe_search_from = "1|2"  (Matches "12", cuts after 1)
+- Set pe_search_to   = "8|9"  (Matches "89", cuts before 9)
+- Set pg_search_from = "alpha |bravo" (Matches "alpha bravo", starts extract at "bravo")
+- Set pg_search_to   = "xray| yankee" (Matches "xray yankee", ends extract at "xray")
+
+Output: The range from '2' to '8' is successfully overwritten by the content from 'bravo' to 'xray'.
+ """)
+
+def edit_range_based_file3(
+    path2edit: str,
+    path2grep: str,
+    sep: str,
+    pe_search_from: str = None,
+    pe_search_to: str = None,
+    pg_search_from: str = None,
+    pg_search_to: str = None,
+) -> str:
+
+    """
+    Wrapper around edit_range_based_file2 that uses a separator to mark the split point.
+
+    Instead of providing two separate parts (X1 and X2) for each search parameter,
+    you provide a single string with a separator (default '|') that marks where the
+    range starts or ends. The full search string is the concatenation of the parts
+    around the separator.
+    """
+
+    if not isinstance( sep, str):
+        return {"status": "error", "message": ["sep has to be a string"]}
+
+    if len( sep) == 0 :
+        return {"status": "error", "message": ["sep must be at least 1 character long"]}
+
+    for paramname in "pe_search_from,pe_search_to,pg_search_from,pg_search_to".split( ','):
+        if eval( paramname).count( sep) != 1 :
+            return {"status": "error", "message": [f"parameter sep {sep} must match exactly 1 times in parameter {paramname}"]}
+
+
+    def split_param(param, sep):
+        """Split a parameter into two parts based on the separator."""
+        if param is None:
+            return None, None
+        if sep in param:
+            idx = param.index(sep)
+            return param[:idx], param[idx + 1:]
+        else:
+            # No separator: entire string is X1, X2 is None (treated as empty)
+            return param, None
+
+    pe_from1, pe_from2 = split_param(pe_search_from, sep)
+    pe_to1, pe_to2 = split_param(pe_search_to, sep)
+    pg_from1, pg_from2 = split_param(pg_search_from, sep)
+    pg_to1, pg_to2 = split_param(pg_search_to, sep)
+
+    ### TODO : the error messages do not really match the parameters in this function
+    return edit_range_based_file2(
+        path2edit=path2edit,
+        path2grep=path2grep,
+        pe_search_from1=pe_from1,
+        pe_search_from2=pe_from2,
+        pe_search_to1=pe_to1,
+        pe_search_to2=pe_to2,
+        pg_search_from1=pg_from1,
+        pg_search_from2=pg_from2,
+        pg_search_to1=pg_to1,
+        pg_search_to2=pg_to2
+    )
+
 @tool(description="Creates a new file with the specified content at the given path. Fails if the file already exists.")
 def create_new_file(path: str, content: str):
     # 1. Safety Check
