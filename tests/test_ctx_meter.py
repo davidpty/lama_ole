@@ -236,6 +236,19 @@ def test_resolve_llamacpp_uses_ps_context():
     assert chat._resolve_ctx_max(st) == 8192
 
 
+def test_resolve_llamacpp_falls_back_to_num_ctx():
+    # Server reports no window -> --num_ctx is used as the best estimate so
+    # the meter keeps its bar/percentage.
+    st = _state(client=_FakeClient(), model="llamacpp:q.gguf", options={"num_ctx": 65536})
+    assert chat._resolve_ctx_max(st) == 65536
+
+
+def test_prompt_gauge_llamacpp_num_ctx_fallback():
+    st = _state(client=_FakeClient(), model="llamacpp:q.gguf", options={"num_ctx": 32768})
+    st.ctx_usage = {"prompt_eval_count": 1000, "eval_count": 234}
+    assert chat._ctx_prompt_gauge(st, use_color=False) == "[ctx 1,234/32,768 ░░░░░░░░░░ 4%] "
+
+
 def test_is_llamacpp_model():
     assert chat._is_llamacpp_model("llamacpp:q.gguf") is True
     assert chat._is_llamacpp_model("ollama:gemma2:2b") is False

@@ -856,7 +856,8 @@ def _ensure_ctx_max(state: ChatState) -> None:
     parameter -> the model's declared capacity (client.show). Returns None
     when nothing is known, in which case the meter shows token counts without
     a percentage. For llama.cpp models the server's window (allocated at
-    launch) is authoritative, so the --num_ctx shortcut is skipped.
+    launch) is authoritative, so the --num_ctx shortcut is skipped; it is
+    only used as a fallback when the server reports no window.
     """
     if state.ctx_max is not None:
         return
@@ -912,6 +913,11 @@ def _resolve_ctx_max(state: ChatState):
     except Exception:
         pass
 
+    # llama.cpp servers allocate the window at launch; when the server
+    # reports nothing usable, fall back to the requested --num_ctx as the
+    # best estimate so the meter keeps its bar/percentage.
+    if num_ctx:
+        return int(num_ctx)
     return None
 
 
