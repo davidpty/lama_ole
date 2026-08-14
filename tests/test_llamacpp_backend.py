@@ -539,3 +539,92 @@ def test_router_llamacpp_launched_suppresses_warnings(capsys):
             options={"num_ctx": 8192},
         ))
     assert capsys.readouterr().err == ""
+
+
+def test_mark_llamacpp_launched_suppresses_warnings(capsys):
+    stream = sse_body(content_chunk("ok"), final_chunk())
+    with FakeLlamaServer(streams=[stream]) as server:
+        router = create_router(
+            ollama_host="http://127.0.0.1:1", llamacpp_host=server.url
+        )
+        router.mark_llamacpp_launched()
+        list(router.chat(
+            model="llamacpp:q.gguf",
+            messages=[{"role": "user", "content": "hi"}],
+            options={"num_ctx": 8192},
+            keep_alive="1h",
+        ))
+    assert capsys.readouterr().err == ""
+
+
+def test_launch_values_match_stays_silent(capsys):
+    stream = sse_body(content_chunk("ok"), final_chunk())
+    with FakeLlamaServer(streams=[stream]) as server:
+        router = create_router(
+            ollama_host="http://127.0.0.1:1",
+            llamacpp_host=server.url,
+            llamacpp_launched=True,
+            llamacpp_launch_values={"num_ctx": 8192, "num_gpu": 33, "keep_alive": 300},
+        )
+        list(router.chat(
+            model="llamacpp:q.gguf",
+            messages=[{"role": "user", "content": "hi"}],
+            options={"num_ctx": 8192, "num_gpu": 33},
+            keep_alive="5m",
+        ))
+    assert capsys.readouterr().err == ""
+
+
+def test_launch_values_mismatch_warns(capsys):
+    stream = sse_body(content_chunk("ok"), final_chunk())
+    with FakeLlamaServer(streams=[stream]) as server:
+        router = create_router(
+            ollama_host="http://127.0.0.1:1",
+            llamacpp_host=server.url,
+            llamacpp_launched=True,
+            llamacpp_launch_values={"num_ctx": 8192},
+        )
+        list(router.chat(
+            model="llamacpp:q.gguf",
+            messages=[{"role": "user", "content": "hi"}],
+            options={"num_ctx": 100000},
+            keep_alive="1h",
+        ))
+    err = capsys.readouterr().err
+    assert "option 'num_ctx' is ignored" in err
+    assert "--keep_alive is ignored" in err
+
+
+def test_mark_llamacpp_launched_values_mismatch_warns(capsys):
+    stream = sse_body(content_chunk("ok"), final_chunk())
+    with FakeLlamaServer(streams=[stream]) as server:
+        router = create_router(
+            ollama_host="http://127.0.0.1:1", llamacpp_host=server.url
+        )
+        router.mark_llamacpp_launched({"num_ctx": 8192}, "5m")
+        list(router.chat(
+            model="llamacpp:q.gguf",
+            messages=[{"role": "user", "content": "hi"}],
+            options={"num_ctx": 100000},
+            keep_alive="1h",
+        ))
+    err = capsys.readouterr().err
+    assert "option 'num_ctx' is ignored" in err
+    assert "--keep_alive is ignored" in err
+
+
+def test_launch_values_missing_key_warns(capsys):
+    stream = sse_body(content_chunk("ok"), final_chunk())
+    with FakeLlamaServer(streams=[stream]) as server:
+        router = create_router(
+            ollama_host="http://127.0.0.1:1",
+            llamacpp_host=server.url,
+            llamacpp_launched=True,
+            llamacpp_launch_values={"num_ctx": 8192},
+        )
+        list(router.chat(
+            model="llamacpp:q.gguf",
+            messages=[{"role": "user", "content": "hi"}],
+            options={"num_gpu": 99},
+        ))
+    assert "option 'num_gpu' is ignored" in capsys.readouterr().err

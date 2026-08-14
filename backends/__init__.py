@@ -9,18 +9,20 @@ DEFAULT_LLAMACPP_HOST = "http://localhost:8080"
 
 
 def create_router(ollama_host=None, llamacpp_host=None, api_key=None,
-                  llamacpp_launched=False):
+                  llamacpp_launched=False, llamacpp_launch_values=None):
     """Build the dispatch client for the given backend hosts.
 
-    ``llamacpp_launched`` marks a llama.cpp server that lama_ole started
-    itself; its launch-time parameters are honored, so the client suppresses
-    the "ignored" warnings for them.
+    ``llamacpp_launch_values`` (dict of ``num_ctx``/``num_gpu``/``keep_alive``
+    honored at launch) marks a llama.cpp server that lama_ole started; the
+    client then only warns about an "ignored" option when the request differs
+    from those launch-time values.
     """
     return RouterClient(
         ollama_host=ollama_host or DEFAULT_OLLAMA_HOST,
         llamacpp_host=llamacpp_host or DEFAULT_LLAMACPP_HOST,
         api_key=api_key,
         llamacpp_launched=llamacpp_launched,
+        llamacpp_launch_values=llamacpp_launch_values,
     )
 
 

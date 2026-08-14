@@ -93,6 +93,7 @@ class ChatState:
     ctx_compact_model: str = None
     loaded_model: str = None
     model_backend: str = "ollama"
+    ensure_llamacpp: callable = None
     stats_by_model: dict = field(default_factory=dict)
     _hotkey_listener: object = None
     _last_cut_messages: list = field(default_factory=list)
@@ -1589,6 +1590,9 @@ def _cmd_model(arg: str, state: ChatState):
         model = canonicalize(arg) if callable(canonicalize) else arg
         state.model = model
         state.loaded_model = model
+        ensure = getattr(state, "ensure_llamacpp", None)
+        if ensure is not None and _is_llamacpp_model(model):
+            ensure(model)
         if state.ctx_usage and state.ctx_usage_model and state.ctx_usage_model != model:
             state.ctx_usage = dict(state.ctx_usage)
             state.ctx_usage["_estimated"] = True

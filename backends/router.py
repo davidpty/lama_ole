@@ -26,10 +26,13 @@ class RouterClient(ModelClient):
     name = "router"
 
     def __init__(self, ollama_host=None, llamacpp_host=None, api_key=None,
-                 llamacpp_launched=False):
+                 llamacpp_launched=False, llamacpp_launch_values=None):
         self._ollama = OllamaClient(host=ollama_host)
         self._llamacpp = LlamaCppClient(
-            host=llamacpp_host, api_key=api_key, launched=llamacpp_launched
+            host=llamacpp_host,
+            api_key=api_key,
+            launched=llamacpp_launched,
+            launch_values=llamacpp_launch_values,
         )
         self._clients = {"ollama": self._ollama, "llamacpp": self._llamacpp}
         self._probe_ts = {"ollama": 0.0, "llamacpp": 0.0}
@@ -42,6 +45,15 @@ class RouterClient(ModelClient):
     @property
     def llamacpp_host(self):
         return self._llamacpp.host
+
+    def mark_llamacpp_launched(self, options=None, keep_alive=None):
+        """Mark the llama.cpp server as one we started.
+
+        The launch-time options are honored by that server, so the client stops
+        warning about ``num_ctx``/``num_gpu``/``keep_alive`` when the request
+        matches them (and warns again when it differs).
+        """
+        self._llamacpp.mark_llamacpp_launched(options, keep_alive)
 
     # -- reachability --------------------------------------------------------
 

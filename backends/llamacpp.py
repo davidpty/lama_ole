@@ -25,6 +25,7 @@ from types import SimpleNamespace
 from typing import Optional, List
 
 from .base import ListResponse, ModelClient, ModelEntry, StreamChunk, StreamMessage
+from .llamacpp_launcher import _parse_keep_alive
 from .sse import iter_sse_events
 
 
@@ -41,14 +42,43 @@ class LlamaCppClient(ModelClient):
 
     name = "llamacpp"
 
-    def __init__(self, host=None, api_key=None, launched=False):
+    def __init__(self, host=None, api_key=None, launched=False, launch_values=None):
         self.host = (host or "http://localhost:8080").rstrip("/")
         self.api_key = api_key
         self.launched = launched
+        self._launch_values = self._normalize_launch_values(launch_values)
         self._warned = set()
         self._tool_acc = []
         self._server_ctx = None
         self._server_ctx_fetched = False
+
+    @staticmethod
+    def _normalize_launch_values(launch_values):
+        if not launch_values:
+            return None
+        values = dict(launch_values)
+        keep_alive = values.get("keep_alive")
+        if keep_alive is not None:
+            seconds = _parse_keep_alive(keep_alive)
+            values["keep_alive"] = seconds if seconds is not None else keep_alive
+        return values
+
+    def mark_llamacpp_launched(self, options=None, keep_alive=None):
+        """Record that the server was launched with the given options.
+
+        The launch-time ``num_ctx``/``num_gpu``/``keep_alive`` values are what
+        the server honors, so matching requests stop warning about them.
+        """
+        self.launched = True
+        values = {}
+        for key in ("num_ctx", "num_gpu"):
+            value = (options or {}).get(key)
+            if value is not None:
+                values[key] = int(value)
+        seconds = _parse_keep_alive(keep_alive)
+        if seconds is not None:
+            values["keep_alive"] = seconds
+        self._launch_values = values if values else None
 
     # -- HTTP plumbing -------------------------------------------------------
 
@@ -173,17 +203,48 @@ class LlamaCppClient(ModelClient):
                     continue
                 opts[okey] = value
             for key in ("num_ctx", "num_gpu"):
-                if options.get(key) is not None and not self.launched and key not in self._warned:
-                    self._warned.add(key)
-                    print(
+                if options.get(key) is not None:
+                    self._warn_ignored(
+                        key,
+                        options[key],
                         "[llamacpp] option '%s' is ignored (%s)" % (
                             key, self._ignored_reason(key)
                         ),
-                        file=sys.stderr,
                     )
         if opts:
             payload.update(opts)
         return payload
+
+    def _ignored_by_launch(self, key, value):
+        """True when a request-time ``value`` is not honored by the server.
+
+        A server we autostarted honors the options it was launched with, so a
+        matching request stays silent; anything that differs from the
+        launch-time value (or an externally-started server) warns.
+        """
+        if value is None:
+            return False
+        if not self.launched:
+            return True
+        if self._launch_values is None:
+            return False
+        launch_value = self._launch_values.get(key)
+        if launch_value is None:
+            return True
+        normalized = self._normalized(key, value)
+        return launch_value != normalized
+
+    def _normalized(self, key, value):
+        """Normalize a request value to compare against a launch-time value."""
+        if key == "keep_alive":
+            parsed = _parse_keep_alive(value)
+            return parsed if parsed is not None else value
+        return value
+
+    def _warn_ignored(self, key, value, message):
+        if self._ignored_by_launch(key, value) and key not in self._warned:
+            self._warned.add(key)
+            print(message, file=sys.stderr)
 
     def _ignored_reason(self, key):
         """Explain why a server-managed option is ignored (one-time warning)."""
@@ -213,14 +274,13 @@ class LlamaCppClient(ModelClient):
 
     def chat(self, model, messages, stream=True, tools=None, options=None,
              keep_alive=None):
-        if keep_alive is not None and not self.launched and "keep_alive" not in self._warned:
-            self._warned.add("keep_alive")
-            print(
-                "[llamacpp] --keep_alive is ignored (the llama.cpp server "
-                "keeps its model resident; launch with --sleep-idle-seconds "
-                "to unload after idle)",
-                file=sys.stderr,
-            )
+        self._warn_ignored(
+            "keep_alive",
+            keep_alive,
+            "[llamacpp] --keep_alive is ignored (the llama.cpp server "
+            "keeps its model resident; launch with --sleep-idle-seconds "
+            "to unload after idle)",
+        )
         payload = self._build_payload(model, messages, tools, options)
         if not stream:
             return self._chat_once(payload)

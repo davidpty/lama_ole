@@ -126,7 +126,8 @@ python3 lama_ole.py -m llamacpp.qwen2.5-7b-instruct-q4_k_m.gguf -i "Hello!"
   configured with an API key (legacy `LAMA_OLE_LLAMACPP_API_KEY` still honored).
 - `--llamacpp-autostart` / `--no-llamacpp-autostart` (env
   `LAMA_OLE_LLAMACPP_AUTOSTART`, default **on**) — start a `llama-server` when
-  none is running; see "Supported features" for what it serves and how it is
+  none is running; only for a **local** host (a remote llama.cpp server is
+  never shadowed). See "Supported features" for what it serves and how it is
   configured (`LAMA_OLE_LLAMACPP_BIN`, `LAMA_OLE_LLAMACPP_MODELS_DIR`,
   `LAMA_OLE_LLAMACPP_ARGS`, `LAMA_OLE_LLAMACPP_STOP_ON_EXIT`).
 
@@ -157,17 +158,24 @@ backends. llama.cpp specifics:
 
 - When no llama-server answers at the llama.cpp host, lama_ole **auto-starts
   one** (default on; `--no-llamacpp-autostart` or
-  `LAMA_OLE_LLAMACPP_AUTOSTART=false` disables it). The router then serves the
-  llama.cpp cache (`$LLAMA_CACHE` or `~/.cache/llama.cpp`) or
-  `LAMA_OLE_LLAMACPP_MODELS_DIR`, so `/model` completion works from the first
-  run; an explicit `-m llamacpp.<file>` is served directly (`-m <path>
-  --alias`), and `owner/name[:tag]` ids are loaded via `--hf-repo`. Binary:
+  `LAMA_OLE_LLAMACPP_AUTOSTART=false` disables it). This only engages for a
+  **local** host (`localhost`, `127.0.0.1`, `::1`) — a remote llama.cpp server
+  is never shadowed by a local spawn. The server is always started in
+  **router mode**, serving the llama.cpp cache (`$LLAMA_CACHE` or
+  `~/.cache/llama.cpp`) and `LAMA_OLE_LLAMACPP_MODELS_DIR`, so `/model`
+  completion and mid-chat switching see every cached model. An
+  `owner/name[:tag]` Hugging Face id is served only once the server lists it
+  (checked against `/v1/models`, not a local path guess); if a targeted HF
+  model is missing, a stderr notice explains the one-time download (e.g.
+  `llama-server --hf-repo owner/name:quant`). Binary:
   `LAMA_OLE_LLAMACPP_BIN` or `llama-server` on PATH; extra args via
   `LAMA_OLE_LLAMACPP_ARGS`. The launched server stays running after exit so
   later runs reuse it (set `LAMA_OLE_LLAMACPP_STOP_ON_EXIT=true` to kill it).
 - When lama_ole starts the server, `--num_ctx`, `--num_gpu`, and `--keep_alive`
-  are honored at launch (`-c`, `-ngl`, `--sleep-idle-seconds`). Against a
-  server it did not start, they are ignored with a one-time actionable warning
+  are honored at launch (`-c`, `-ngl`, `--sleep-idle-seconds`), and later runs
+  recognize the autostarted daemon from a state marker so those options stay
+  quiet. Against a server it did not start, or when the request differs from
+  the launch-time values, they are ignored with a one-time actionable warning
   (the `num_ctx` warning reports the server's actual window from `/props`).
 - Per-request sampling options (`--temperature`, `--top_p`, `--top_k`,
   `--repeat_penalty`, `--presence_penalty`, `--frequency_penalty`, `--min_p`,

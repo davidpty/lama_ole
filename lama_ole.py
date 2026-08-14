@@ -37,6 +37,7 @@ from backends import (
     DEFAULT_OLLAMA_HOST,
     DEFAULT_LLAMACPP_HOST,
     create_router,
+    llamacpp_launcher,
 )
 import color_util
 import history as history_mod
@@ -208,6 +209,89 @@ def _llamacpp_bare_model(model_id):
     if model_id and model_id.startswith("llamacpp:"):
         return model_id[len("llamacpp:"):]
     return None
+
+
+def _effective_llamacpp_model(args):
+    """The llama.cpp model to target when autostarting, or None.
+
+    Order: an explicit ``-m llamacpp:...`` wins; otherwise, when resume is on,
+    the most recent session's stored model is used if it is a llama.cpp model —
+    the resumed session overrides the CLI model anyway, so the server must
+    serve whatever the session will use.
+    """
+    bare = _llamacpp_bare_model(args.model)
+    if bare is not None:
+        return bare
+    if args.resume:
+        try:
+            resume = find_recent_session(_default_sessions_dir(), os.getcwd())
+        except Exception:
+            return None
+        if resume:
+            return _llamacpp_bare_model(resume[1].get("model"))
+    return None
+
+
+def _warn_llamacpp_hf_not_served(llamacpp_host, model_id, api_key=None):
+    """Print a stderr notice when the llama.cpp server does not serve an HF id.
+
+    Router mode serves only what the llama.cpp server already has (its cache /
+    models dir), so a missing ``owner/name[:quant]`` id must be downloaded once
+    before it can be used. The check queries the server's own model list, so it
+    never guesses about cache locations.
+    """
+    if not llamacpp_launcher.is_hf_id(model_id):
+        return
+    served = llamacpp_launcher.server_has_model(llamacpp_host, model_id, api_key)
+    if served is not False:  # served, or unreachable (None) — don't guess
+        return
+    print(
+        "[llamacpp] model %r is not served by the llama.cpp server — it will "
+        "not be available until downloaded (run e.g. `llama-server --hf-repo "
+        "%s` once)" % (model_id, model_id),
+        file=sys.stderr,
+    )
+
+
+def _maybe_autostart_llamacpp(args, llamacpp_host):
+    """Start llama-server when autostart applies; return the launch options.
+
+    Returns a dict of the launch-time values honored by the server
+    (``num_ctx``/``num_gpu``/``keep_alive``) when it was started this run, else
+    None. Engages only when autostart is enabled, the invocation is not a
+    query mode, and the host is local — a remote llama.cpp server must never be
+    shadowed by a local spawn. The server always runs in router mode so every
+    cached model is available to ``/model``.
+    """
+    if not args.llamacpp_autostart or (
+        args.list or args.ps or args.stop or args.transfer
+    ):
+        return None
+    if not llamacpp_launcher.is_local_host(llamacpp_host):
+        return None
+    model_id = _effective_llamacpp_model(args)
+    launch_options = {}
+    if args.num_ctx is not None:
+        launch_options["num_ctx"] = args.num_ctx
+    if args.num_gpu is not None:
+        launch_options["num_gpu"] = args.num_gpu
+    launched = llamacpp_launcher.ensure_server(
+        host=llamacpp_host,
+        options=launch_options,
+        keep_alive=args.keep_alive,
+        api_key=_llamacpp_api_key_env(),
+        autostart=args.llamacpp_autostart,
+    )
+    if model_id:
+        _warn_llamacpp_hf_not_served(
+            llamacpp_host, model_id, _llamacpp_api_key_env()
+        )
+    if launched is None:
+        return None
+    launch_values = dict(launch_options)
+    if args.keep_alive is not None:
+        launch_values["keep_alive"] = args.keep_alive
+    return launch_values
 
 
 def _env_choice(name, default, choices):
@@ -750,34 +834,19 @@ def main():
 
     # Auto-start the llama.cpp server when needed (and honor its launch-time
     # options). Runs before create_router() so the router's first list() — the
-    # source for /model completion — already sees the server.
-    llamacpp_launched = False
-    if args.llamacpp_autostart and not (
-        args.list or args.ps or args.stop or args.transfer
-    ):
-        from backends import llamacpp_launcher
-
-        model_id = _llamacpp_bare_model(args.model)
-        launch_options = {}
-        if args.num_ctx is not None:
-            launch_options["num_ctx"] = args.num_ctx
-        if args.num_gpu is not None:
-            launch_options["num_gpu"] = args.num_gpu
-        launched = llamacpp_launcher.ensure_server(
-            host=llamacpp_host,
-            model_id=model_id,
-            options=launch_options,
-            keep_alive=args.keep_alive,
-            api_key=_llamacpp_api_key_env(),
-            autostart=args.llamacpp_autostart,
-        )
-        llamacpp_launched = launched is not None
+    # source for /model completion — already sees the server. When a server we
+    # autostarted earlier is still running, recognize it from the state marker
+    # so the "ignored option" warnings stay quiet for matching requests.
+    launch_values = _maybe_autostart_llamacpp(args, llamacpp_host)
+    if launch_values is None:
+        launch_values = llamacpp_launcher.launched_server_values(llamacpp_host)
 
     client = create_router(
         ollama_host=ollama_host,
         llamacpp_host=llamacpp_host,
         api_key=_llamacpp_api_key_env(),
-        llamacpp_launched=llamacpp_launched,
+        llamacpp_launched=launch_values is not None,
+        llamacpp_launch_values=launch_values,
     )
 
     # Propagate host and vision models to tools
@@ -1050,10 +1119,42 @@ def main():
                 ctx_compact_threshold=args.auto_compact_threshold,
                 ctx_compact_model=args.auto_compact_model,
             )
+
+            def ensure_llamacpp(model_id):
+                """Lazily start llama-server for the active llama.cpp model.
+
+                No-op when autostart is off, the model is not a llama.cpp
+                model, the host is remote (a local spawn would shadow it), or
+                a server already answers there. The server always runs in
+                router mode; a targeted HF model is checked against the cache
+                and a notice is printed when it is missing. On success the
+                router's client is marked launched so the ignored-option
+                warnings stay silent.
+                """
+                bare = _llamacpp_bare_model(model_id)
+                if not args.llamacpp_autostart or bare is None:
+                    return
+                if not llamacpp_launcher.is_local_host(llamacpp_host):
+                    return
+                launched = llamacpp_launcher.ensure_server(
+                    host=llamacpp_host,
+                    options=state.options,
+                    keep_alive=state.keep_alive,
+                    api_key=_llamacpp_api_key_env(),
+                    autostart=args.llamacpp_autostart,
+                )
+                _warn_llamacpp_hf_not_served(
+                    llamacpp_host, bare, _llamacpp_api_key_env()
+                )
+                if launched is not None:
+                    client.mark_llamacpp_launched(state.options, state.keep_alive)
+
+            state.ensure_llamacpp = ensure_llamacpp
             if args.resume:
                 resume = find_recent_session(sessions_dir, os.getcwd())
                 if resume:
                     _resume_session_into(state, resume)
+                ensure_llamacpp(state.model)
             if not state.session_id:
                 state.session_id = new_session_id()
                 state.session_created_at = time.time()

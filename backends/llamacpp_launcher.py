@@ -5,16 +5,14 @@ enabled (the default) and no server answers at the configured host, this
 module starts one itself so model listing and ``/model`` completion work out
 of the box.
 
-Two launch modes:
-
-* **router mode** (default) — ``llama-server`` with no model. The server's
-  router auto-discovers models from the llama.cpp cache (``$LLAMA_CACHE``,
-  else ``~/.cache/llama.cpp``) or from ``LAMA_OLE_LLAMACPP_MODELS_DIR``,
-  serves every model it finds and loads them on demand. This is what makes
-  ``/model`` completion and mid-chat model switching work.
-* **single-model mode** — when the user targeted an explicit ``llamacpp:``
-  model that resolves to a local GGUF file (or an ``owner/name[:tag]``
-  Hugging Face id), the server is started with that model directly.
+The server is always started in **router mode** — ``llama-server`` with no
+model. The server's router auto-discovers models from the llama.cpp cache
+(``$LLAMA_CACHE``, else ``~/.cache/llama.cpp``) or from
+``LAMA_OLE_LLAMACPP_MODELS_DIR``, serves every model it finds and loads them
+on demand. This is what makes ``/model`` completion and mid-chat model
+switching work; a targeted ``owner/name[:tag]`` Hugging Face id is served only
+once it is present in that cache (the caller is expected to warn when it is
+not).
 
 Options that cannot be applied per request are honored at launch instead:
 ``num_ctx`` -> ``-c``, ``num_gpu`` -> ``-ngl``, ``keep_alive`` ->
@@ -26,6 +24,7 @@ lama_ole exits.
 """
 
 import atexit
+import json
 import os
 import re
 import shlex
@@ -34,12 +33,14 @@ import subprocess
 import sys
 import tempfile
 import time
-import urllib.error
 import urllib.parse
 import urllib.request
 
 # LaunchedServer instances we own, kept alive for the process lifetime.
 _SPAWNED = []
+
+# Loopback hostnames — the only hosts a locally-spawned server may use.
+_LOCAL_HOSTS = frozenset({"localhost", "127.0.0.1", "::1", "0.0.0.0"})
 
 
 class LauncherError(Exception):
@@ -74,23 +75,6 @@ def resolve_binary():
     return shutil.which("llama-server")
 
 
-def default_models_dir():
-    """The llama.cpp model cache directory (used by router mode by default).
-
-    Resolution mirrors llama.cpp: ``$LLAMA_CACHE``, then
-    ``$XDG_CACHE_HOME/llama.cpp``, then ``~/.cache/llama.cpp``. Used only to
-    decide whether autostart has anything to serve; the server resolves the
-    same location itself.
-    """
-    value = os.environ.get("LLAMA_CACHE")
-    if value:
-        return value
-    xdg = os.environ.get("XDG_CACHE_HOME")
-    if xdg:
-        return os.path.join(xdg, "llama.cpp")
-    return os.path.join(os.path.expanduser("~"), ".cache", "llama.cpp")
-
-
 def _parse_keep_alive(value):
     """Parse an Ollama keep_alive value ('5m', '1h', '90', '0') into seconds.
 
@@ -118,26 +102,47 @@ def _host_port(host):
     return hostname, port
 
 
-def resolve_model_args(model_id):
-    """Return argv that serves ``model_id``, or None when unresolvable.
+def is_local_host(host):
+    """True when ``host`` points at this machine (a loopback address).
 
-    * an existing file path -> ``["-m", <path>, "--alias", <basename>]``
-    * an ``owner/name[:tag]`` Hugging Face id -> ``["--hf-repo", <id>]``
-    * anything else -> None (the caller falls back to router mode)
+    Autostart only makes sense for a local server: when the configured host is
+    a remote machine, starting one here would just shadow the intended target.
     """
+    hostname, _ = _host_port(host)
+    return hostname in _LOCAL_HOSTS
+
+
+def is_hf_id(model_id):
+    """True when ``model_id`` is an ``owner/name[:quant]`` Hugging Face id."""
     if not model_id:
-        return None
-    expanded = os.path.expanduser(model_id)
-    if os.path.isfile(expanded):
-        return ["-m", expanded, "--alias", os.path.basename(expanded)]
+        return False
     lower = model_id.lower()
-    if (
+    return (
         "/" in model_id
         and not lower.endswith(".gguf")
         and not model_id.startswith(("/", "."))
-    ):
-        return ["--hf-repo", model_id]
-    return None
+    )
+
+
+def server_has_model(host, model_id, api_key=None):
+    """True when the server at ``host`` serves ``model_id``.
+
+    Queries ``/v1/models`` — the same listing ``/model`` completion uses — so
+    the check is authoritative. Returns True when the id is served, False when
+    the server answers but does not list it, and None when the server is
+    unreachable (so the caller can skip rather than guess).
+    """
+    url = host.rstrip("/") + "/v1/models"
+    request = urllib.request.Request(url)
+    if api_key:
+        request.add_header("Authorization", "Bearer %s" % api_key)
+    try:
+        with urllib.request.urlopen(request, timeout=3.0) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+    except Exception:
+        return None
+    ids = [m.get("id") for m in data.get("data", [])]
+    return model_id in ids
 
 
 def _models_dir():
@@ -148,26 +153,71 @@ def _models_dir():
     return os.path.expanduser(value)
 
 
-def can_autostart(model_id):
-    """Whether there is anything worth serving (avoids pointless spawns).
+# State marker: records which llama.cpp hosts we autostarted and with which
+# launch-time options, so later processes can recognize the daemon as ours and
+# know what it was launched with.
+_MARKER_PATH = os.path.join(
+    tempfile.gettempdir(), "lama_ole-llamaserver-state.json"
+)
 
-    True when the targeted model resolves to a file/HF id, an explicit
-    ``LAMA_OLE_LLAMACPP_MODELS_DIR`` exists, or the default llama.cpp cache
-    directory exists.
+
+def _read_marker():
+    try:
+        with open(_MARKER_PATH, "r", encoding="utf-8") as handle:
+            data = json.load(handle)
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _write_marker(data):
+    try:
+        with open(_MARKER_PATH, "w", encoding="utf-8") as handle:
+            json.dump(data, handle)
+    except OSError:
+        pass
+
+
+def _record_launch(host, options, keep_alive):
+    """Persist the launch-time options honored by the server at ``host``."""
+    values = {}
+    for key in ("num_ctx", "num_gpu"):
+        value = (options or {}).get(key)
+        if value is not None:
+            values[key] = int(value)
+    seconds = _parse_keep_alive(keep_alive)
+    if seconds is not None:
+        values["keep_alive"] = seconds
+    data = _read_marker()
+    data[host] = values
+    _write_marker(data)
+
+
+def _forget_launch(host):
+    data = _read_marker()
+    if host in data:
+        del data[host]
+        _write_marker(data)
+
+
+def launched_server_values(host):
+    """The launch-time options of the autostarted server at ``host``, or None.
+
+    Returns the recorded ``num_ctx``/``num_gpu``/``keep_alive`` (seconds) only
+    when we autostarted a server there and it is still answering — otherwise a
+    running server (if any) was not started by us and its options are unknown.
     """
-    if resolve_model_args(model_id) is not None:
-        return True
-    directory = _models_dir()
-    if directory:
-        return os.path.isdir(directory)
-    return os.path.isdir(default_models_dir())
+    values = _read_marker().get(host)
+    if not values or not _is_ready(host):
+        return None
+    return dict(values)
 
 
-def build_command(host, model_id=None, options=None, keep_alive=None, api_key=None):
-    """Assemble the llama-server argv.
+def build_command(host, options=None, keep_alive=None, api_key=None):
+    """Assemble the llama-server argv (always router mode).
 
-    Returns ``(argv, mode)`` where mode is ``"router"`` or ``"single"``.
-    Raises :class:`LauncherError` when no binary is available.
+    Returns ``(argv, "router")``. Raises :class:`LauncherError` when no binary
+    is available.
     """
     bin_path = resolve_binary()
     if not bin_path:
@@ -192,21 +242,15 @@ def build_command(host, model_id=None, options=None, keep_alive=None, api_key=No
     if idle is not None:
         argv += ["--sleep-idle-seconds", str(idle)]
 
-    model_args = resolve_model_args(model_id)
-    if model_args is not None:
-        argv += model_args
-        mode = "single"
-    else:
-        directory = _models_dir()
-        if directory:
-            argv += ["--models-dir", directory]
-        mode = "router"
+    directory = _models_dir()
+    if directory:
+        argv += ["--models-dir", directory]
 
     extra = os.environ.get("LAMA_OLE_LLAMACPP_ARGS")
     if extra:
         argv += shlex.split(extra)
 
-    return argv, mode
+    return argv, "router"
 
 
 class LaunchedServer:
@@ -233,6 +277,7 @@ class LaunchedServer:
                     self.proc.kill()
                 except Exception:
                     pass
+        _forget_launch(self.host)
 
 
 def _report_failed_launch(proc, log_path, argv):
@@ -252,20 +297,19 @@ def _report_failed_launch(proc, log_path, argv):
 
 def ensure_server(
     host,
-    model_id=None,
     options=None,
     keep_alive=None,
     api_key=None,
     autostart=True,
     wait_timeout=120.0,
 ):
-    """Start llama-server when needed; return a :class:`LaunchedServer` or None.
+    """Start llama-server (router mode) when needed; return a LaunchedServer or None.
 
     Returns None (and prints nothing) when the host already answers, autostart
-    is disabled, no binary is available, or there is nothing to serve. When a
-    server is started, a one-line notice goes to stderr.
+    is disabled, no binary is available, or the launch fails. When a server is
+    started, a one-line notice goes to stderr.
     """
-    if not autostart or _is_ready(host) or not can_autostart(model_id):
+    if not autostart or _is_ready(host):
         return None
     if not resolve_binary():
         print(
@@ -277,7 +321,6 @@ def ensure_server(
     try:
         argv, mode = build_command(
             host,
-            model_id=model_id,
             options=options,
             keep_alive=keep_alive,
             api_key=api_key,
@@ -321,11 +364,13 @@ def ensure_server(
 
     launched = LaunchedServer(proc, host, argv, log_path)
     _SPAWNED.append(launched)
+    _record_launch(host, options, keep_alive)
     if _bool_env("LAMA_OLE_LLAMACPP_STOP_ON_EXIT", False):
         atexit.register(launched.stop)
-    served = model_id if model_id else (
-        "models from %s" % (_models_dir() or default_models_dir())
-    )
+    if _models_dir():
+        served = "models from %s" % _models_dir()
+    else:
+        served = "models from the llama.cpp cache"
     print(
         "[llamacpp] started llama-server (pid %d) on %s serving %s; log: %s"
         % (proc.pid, host, served, log_path),
