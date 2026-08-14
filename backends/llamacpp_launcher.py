@@ -18,9 +18,10 @@ Options that cannot be applied per request are honored at launch instead:
 ``num_ctx`` -> ``-c``, ``num_gpu`` -> ``-ngl``, ``keep_alive`` ->
 ``--sleep-idle-seconds``.
 
-A launched server is left running (daemon-style) so later invocations reuse
-it instantly; set ``LAMA_OLE_LLAMACPP_STOP_ON_EXIT=true`` to kill it when
-lama_ole exits.
+A server lama_ole launched itself is killed when lama_ole exits; set
+``LAMA_OLE_LLAMACPP_STOP_ON_EXIT=false`` to leave it running (daemon-style)
+so later invocations reuse it instantly. Servers lama_ole did not start are
+never touched.
 """
 
 import atexit
@@ -365,7 +366,7 @@ def ensure_server(
     launched = LaunchedServer(proc, host, argv, log_path)
     _SPAWNED.append(launched)
     _record_launch(host, options, keep_alive)
-    if _bool_env("LAMA_OLE_LLAMACPP_STOP_ON_EXIT", False):
+    if _bool_env("LAMA_OLE_LLAMACPP_STOP_ON_EXIT", True):
         atexit.register(launched.stop)
     if _models_dir():
         served = "models from %s" % _models_dir()

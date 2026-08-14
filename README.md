@@ -169,8 +169,9 @@ backends. llama.cpp specifics:
   model is missing, a stderr notice explains the one-time download (e.g.
   `llama-server --hf-repo owner/name:quant`). Binary:
   `LAMA_OLE_LLAMACPP_BIN` or `llama-server` on PATH; extra args via
-  `LAMA_OLE_LLAMACPP_ARGS`. The launched server stays running after exit so
-  later runs reuse it (set `LAMA_OLE_LLAMACPP_STOP_ON_EXIT=true` to kill it).
+  `LAMA_OLE_LLAMACPP_ARGS`. A server lama_ole started is killed when lama_ole
+  exits (set `LAMA_OLE_LLAMACPP_STOP_ON_EXIT=false` to leave it running so
+  later runs reuse it).
 - When lama_ole starts the server, `--num_ctx`, `--num_gpu`, and `--keep_alive`
   are honored at launch (`-c`, `-ngl`, `--sleep-idle-seconds`), and later runs
   recognize the autostarted daemon from a state marker so those options stay
