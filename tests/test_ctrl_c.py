@@ -313,8 +313,8 @@ def test_run_chat_interrupt_keeps_completed_tool_rounds(monkeypatch, capsys):
     # The completed tool calls are visible in /history.
     chat._cmd_history("", state)
     out = capsys.readouterr().out
-    assert "ASSISTANT (TOOLCALL) TOOL: [data from read_file: path='a.txt']" in out
-    assert "ASSISTANT (TOOLCALL) TOOL: [data from read_file: path='b.txt']" in out
+    assert "tools: [data from read_file: path='a.txt']" in out
+    assert "tools: [data from read_file: path='b.txt']" in out
 
 
 def test_run_chat_interrupt_during_tool_execution_drops_dangling_toolcall(

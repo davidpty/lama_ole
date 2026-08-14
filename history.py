@@ -14,19 +14,22 @@ centralizes the concepts they share so the two features cannot diverge:
   ``parse_output_format``)
 
 Line templates are ``str.format_map`` strings with a small token set:
-``{num}`` (entry number), ``{ts}`` (``[<time>] `` when the message carries a
-timestamp, else empty), ``{role}`` (the display name, always present),
-``{text}`` (the message text; tool calls render as a ``[data from ...]``
-summary), ``{tool}`` and ``{args}`` (tool entries only). Types may be named
+``{num}`` (entry number), ``{ts}`` (``[<full time>] `` when the message
+carries a timestamp, else empty), ``{t}`` (``<HH:MM:SS> `` short time, else
+empty), ``{role}`` (the display name, always present), ``{text}`` (the
+message text; tool calls render as a ``[data from ...]`` summary), ``{tool}``
+and ``{args}`` (tool entries only). Types may be named
 by their canonical key or a role-name alias (``assistant`` -> ``output``,
 ``tool`` -> ``tool_result``). An empty template hides that entry type.
 Display names can be customized with ``name.<role>=<label>`` pairs, which
 override what the ``{role}`` token expands to (roles: ``user``, ``assistant``,
-``thinking``, ``toolcall``, ``tool``, ``compacted``). Colors are applied per
-entry type whenever the global color mode is enabled; there is no per-line
-color setting.
+``thinking``, ``toolcall``, ``tool``, ``compacted``). A toolcall entry uses
+just ``name.toolcall`` for its label (the invoked tool already appears in the
+``[data from ...]`` summary). Colors are applied per entry type whenever the
+global color mode is enabled; there is no per-line color setting.
 """
 
+import datetime
 import json
 import os
 import sys
@@ -48,19 +51,19 @@ _TYPE_ALIASES = {
     "compacted": "compacted",
 }
 
-_DEFAULT_TEMPLATE = "[{num}] {ts}{role}: {text}"
-_DEFAULT_OUTPUT_TEMPLATE = "{text}"
+_DEFAULT_TEMPLATE = "[{num}] {t}{role}: {text}"
+_DEFAULT_OUTPUT_TEMPLATE = "[{num}] {t}{role}: {text}"
 
 _DEFAULT_FORMATS = {t: _DEFAULT_TEMPLATE for t in _FORMAT_TYPES}
 _DEFAULT_FORMATS["tool_result"] = ""
 
 _DEFAULT_NAMES = {
-    "user": "USER",
-    "assistant": "ASSISTANT",
-    "thinking": "ASSISTANT (THOUGHT)",
-    "toolcall": "ASSISTANT (TOOLCALL)",
-    "tool": "TOOL",
-    "compacted": "COMPACTED",
+    "user": "You",
+    "assistant": "Me",
+    "thinking": "thinking",
+    "toolcall": "tools",
+    "tool": "tool result",
+    "compacted": "summary",
 }
 
 _NAME_ROLES = tuple(_DEFAULT_NAMES)
@@ -275,6 +278,18 @@ def _text(content):
     return str(content)
 
 
+def _short_timestamp(value):
+    """Return the ``HH:MM:SS`` part of a stored timestamp, or '' if unusable."""
+    if not value:
+        return ""
+    try:
+        return datetime.datetime.strptime(
+            value, "%Y-%m-%d %H:%M:%S"
+        ).strftime("%H:%M:%S")
+    except (TypeError, ValueError):
+        return ""
+
+
 def _apply_format_spec(formats, spec):
     """Apply one format value onto a resolved formats dict.
 
@@ -326,7 +341,7 @@ def parse_line_formats(view="history"):
     ``LAMA_OLE_FORMAT_HISTORY``, ``LAMA_OLE_FORMAT_REPLAY`` or
     ``LAMA_OLE_FORMAT_OUTPUT``. Overrides merge per entry type (and per role
     name), so a view var only changes the types and names it mentions. Unset
-    types keep the built-in default ``[{num}] {ts}{role}: {text}``;
+    types keep the built-in default ``[{num}] {t}{role}: {text}``;
     ``tool_result`` stays hidden (empty template) unless a var names it.
     """
     formats = LineFormats(_DEFAULT_FORMATS)
@@ -339,10 +354,10 @@ def parse_line_formats(view="history"):
 def parse_output_format():
     """Resolve the live chat output template.
 
-    The live assistant stream keeps its current raw-text behavior unless
-    ``LAMA_OLE_FORMAT_OUTPUT`` is set. The same template tokens are available
-    as the history/replay views, but the default is the plain streamed text
-    rather than a numbered listing.
+    The live assistant stream defaults to the same ``[{num}] {t}{role}:
+    {text}`` header as the history/replay views, so the timestamp and role
+    positions stay identical across all outputs. The same template tokens are
+    available as the history/replay views.
     """
     formats = LineFormats({"output": _DEFAULT_OUTPUT_TEMPLATE})
     _apply_format_spec(formats, os.environ.get(_VIEW_ENV["output"]))
@@ -438,10 +453,14 @@ def format_output_entry(entry, use_color=True, formats=None):
     etype = entry.get("type") or "output"
     role_token = names.get(role, etype)
     num = str(entry["num"])
-    ts = f"[{msg['timestamp']}] " if msg.get("timestamp") else ""
+    stamp = msg.get("timestamp") or ""
+    ts = f"[{stamp}] " if stamp else ""
+    short = _short_timestamp(stamp)
+    t = f"{short} " if short else ""
     tokens = {
         "num": num,
         "ts": ts,
+        "t": t,
         "role": role_token,
         "text": _text(content),
         "tool": "",
@@ -462,7 +481,7 @@ def format_list_entry(entry, use_color=True, formats=None):
 
     The line is produced from the entry type's template (see
     :func:`parse_line_formats`); an empty template returns ``None`` (hidden).
-    Tokens: ``{num}``, ``{ts}``, ``{role}``, ``{text}``, ``{tool}``,
+    Tokens: ``{num}``, ``{ts}``, ``{t}``, ``{role}``, ``{text}``, ``{tool}``,
     ``{args}``. The whole line is colored by entry type when ``use_color`` is
     set. ``formats`` defaults to the resolved per-view configuration.
     """
@@ -483,7 +502,10 @@ def format_list_entry(entry, use_color=True, formats=None):
 
     names = getattr(formats, "names", _DEFAULT_NAMES)
     num = str(entry["num"])
-    ts = f"[{msg['timestamp']}] " if msg.get("timestamp") else ""
+    stamp = msg.get("timestamp") or ""
+    ts = f"[{stamp}] " if stamp else ""
+    short = _short_timestamp(stamp)
+    t = f"{short} " if short else ""
     tool, args = "", ""
     if etype == "user":
         role_token = names["user"]
@@ -498,8 +520,6 @@ def format_list_entry(entry, use_color=True, formats=None):
     elif etype == "toolcall":
         summary = toolcall_summary(msg)
         role_token = names["toolcall"]
-        if summary:
-            role_token = f"{role_token} {names['tool']}"
         text = summary
         tool, args = _first_tool(msg)
     elif etype == "tool_result":
@@ -507,7 +527,7 @@ def format_list_entry(entry, use_color=True, formats=None):
         text = _text(content)
         tool = msg.get("tool_name") or ""
     elif etype == "compacted":
-        role_token = names.get("compacted", "COMPACTED")
+        role_token = names.get("compacted", "summary")
         text = (content or "").strip() or "[compacted context]"
     else:
         role_token = names.get(role, etype)
@@ -516,6 +536,7 @@ def format_list_entry(entry, use_color=True, formats=None):
     tokens = {
         "num": num,
         "ts": ts,
+        "t": t,
         "role": role_token,
         "text": text,
         "tool": tool,

@@ -346,8 +346,8 @@ def test_replay_history_renders_compacted_label(capsys):
     ]
     chat._replay_history(st, use_color=False)
     out = capsys.readouterr().out
-    assert "[1] COMPACTED: SUMMARY" in out
-    assert "[2] USER: recent" in out
+    assert "[1] summary: SUMMARY" in out
+    assert "[2] You: recent" in out
 
 
 def test_compaction_system_prompt_present():

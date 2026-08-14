@@ -622,8 +622,9 @@ variables:
 
 - `LAMA_OLE_FORMAT_HISTORY` — the `/history` view.
 - `LAMA_OLE_FORMAT_REPLAY` — session replay.
-- `LAMA_OLE_FORMAT_OUTPUT` — the live `--chat` assistant stream. It defaults
-  to raw streamed text, so leaving it unset preserves the current chat output.
+- `LAMA_OLE_FORMAT_OUTPUT` — the live `--chat` assistant stream. It uses the
+  same `[{num}] {t}{role}: {text}` header as the other views by default, so the
+  timestamp and role positions are identical across every output.
 
 Each entry type has one template. A value is either a bare template applied to
 every visible type, or semicolon-separated `type=template` pairs. Types may be
@@ -632,27 +633,29 @@ named by their canonical key or a role-name alias: `user`, `output`
 `compacted`. An empty template (`type=`) hides that entry type. The display
 names behind the `{role}` token are customized with `name.<role>=<label>`
 pairs (roles: `user`, `assistant`, `thinking`, `toolcall`, `tool`,
-`compacted`); a toolcall entry composes its name from `name.toolcall` +
-`name.tool` when it carries a summary. Tokens:
+`compacted`); a toolcall entry uses just `name.toolcall` for its label, since
+the invoked tool already appears in the `[data from ...]` summary. Tokens:
 
 - `{num}` — the entry number (`1` = oldest, `M` = newest)
-- `{ts}` — `[<time>] ` when the message carries a timestamp, else empty
-- `{role}` — the display name (`USER`, `ASSISTANT (TOOLCALL)`, `TOOL`, ...);
+- `{t}` — `HH:MM:SS ` when the message carries a timestamp, else empty
+- `{ts}` — `[<full time>] ` (with date) when a timestamp is present, else empty
+- `{role}` — the display name (`You`, `Me`, `thinking`, `tools`, ...);
   override it with `name.<role>=<label>` rather than inlining labels into
   every template
 - `{text}` — the message text (tool calls render as `[data from <name>: <args>]`)
 - `{tool}` / `{args}` — the tool name / arguments (tool entries only)
 
-The default is `[{num}] {ts}{role}: {text}` for all visible types and an empty
+The default is `[{num}] {t}{role}: {text}` for all visible types with the
+friendly labels `You`, `Me`, `thinking`, `tools`, `summary`, and an empty
 template for `tool_result` (hidden). An invalid template falls back to the
 default and prints a warning once. Colors are applied per entry type whenever
 color mode is on; there is no per-line color setting. Examples:
 
 ```sh
-LAMA_OLE_FORMAT_HISTORY="[{num}] {ts}{role}: {text}"     # built-in /history default
-LAMA_OLE_FORMAT_REPLAY="user={num} You: {text};assistant={num} Bot: {text}"
-LAMA_OLE_FORMAT_OUTPUT="{text}"                          # raw live chat output (default)
-LAMA_OLE_FORMAT_OUTPUT="[{num}] {role}: {text}"          # format live chat output
+LAMA_OLE_FORMAT_HISTORY="[{num}] {t}{role}: {text}"     # built-in /history default
+LAMA_OLE_FORMAT_REPLAY="user=[{num}] You: {text};assistant=[{num}] Bot: {text}"
+LAMA_OLE_FORMAT_OUTPUT="{text}"                         # raw streamed output (no header)
+LAMA_OLE_FORMAT_OUTPUT="[{num}] {t}{role}: {text}"      # default live chat header
 ```
 
 `/history -t` forces tool results on for one listing: a hidden `tool_result`
@@ -667,12 +670,11 @@ independent from the `/history` and replay views.
 oldest to newest. By default it shows user messages, assistant output, thinking
 and tool calls; tool **responses** are shown only with `-t`.
 
-Every entry is prefixed with the time the event happened, e.g.
-`[7] [2026-08-09 09:01:00] USER: ...`. Tool calls show the concrete function
-name and arguments (`TOOL: [data from read_file: path='lama_ole/AGENTS.md']`),
-not just an empty `ASSISTANT (TOOLCALL)` marker; the full tool response data
-still requires `-t` (or a `tool_result` line template in
-`LAMA_OLE_FORMAT_HISTORY`).
+Every entry is prefixed with the short time the event happened, e.g.
+`[7] 09:01:00 You: ...`. Tool calls show the concrete function
+name and arguments (`tools: [data from read_file: path='lama_ole/AGENTS.md']`),
+not just an empty marker; the full tool response data still requires `-t` (or a
+`tool_result` line template in `LAMA_OLE_FORMAT_HISTORY`).
 
 | Command | Shows |
 |---------|-------|

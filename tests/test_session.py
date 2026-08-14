@@ -130,10 +130,10 @@ class SessionSerializeTest(unittest.TestCase):
         self.assertNotIn("[tool:", out)
         self.assertNotIn("[tool result:", out)
         # Replay is a numbered /history listing (tool result hidden by default).
-        self.assertIn("[1] USER: hi\n", out)
-        self.assertIn("[2] ASSISTANT: hello there", out)
-        self.assertIn("[3] ASSISTANT (TOOLCALL) TOOL: [data from get_weather", out)
-        self.assertIn("[5] ASSISTANT: it is sunny", out)
+        self.assertIn("[1] You: hi\n", out)
+        self.assertIn("[2] Me: hello there", out)
+        self.assertIn("[3] tools: [data from get_weather", out)
+        self.assertIn("[5] Me: it is sunny", out)
 
     def test_replay_history_shows_stored_thinking(self):
         state = _make_state()
@@ -145,7 +145,7 @@ class SessionSerializeTest(unittest.TestCase):
         with contextlib.redirect_stdout(buf):
             chat._replay_history(state, use_color=True)
         out = buf.getvalue()
-        self.assertIn("ASSISTANT (THOUGHT): hmm", out)
+        self.assertIn("thinking: hmm", out)
         self.assertIn("\x01\033[", out)
 
     def test_replay_history_tool_entries_via_template(self):
@@ -170,8 +170,8 @@ class SessionSerializeTest(unittest.TestCase):
             with contextlib.redirect_stdout(buf):
                 chat._replay_history(state, use_color=False)
         out = buf.getvalue()
-        self.assertIn("[1] ASSISTANT (TOOLCALL) TOOL: [data from get_weather", out)
-        self.assertIn("[2] TOOL: [data from ...]", out)
+        self.assertIn("[1] tools: [data from get_weather", out)
+        self.assertIn("[2] tool result: [data from ...]", out)
 
     def test_replay_history_colored(self):
         state = _make_state()
