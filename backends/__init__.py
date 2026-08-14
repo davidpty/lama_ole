@@ -8,12 +8,19 @@ DEFAULT_OLLAMA_HOST = "http://localhost:11434"
 DEFAULT_LLAMACPP_HOST = "http://localhost:8080"
 
 
-def create_router(ollama_host=None, llamacpp_host=None, api_key=None):
-    """Build the dispatch client for the given backend hosts."""
+def create_router(ollama_host=None, llamacpp_host=None, api_key=None,
+                  llamacpp_launched=False):
+    """Build the dispatch client for the given backend hosts.
+
+    ``llamacpp_launched`` marks a llama.cpp server that lama_ole started
+    itself; its launch-time parameters are honored, so the client suppresses
+    the "ignored" warnings for them.
+    """
     return RouterClient(
         ollama_host=ollama_host or DEFAULT_OLLAMA_HOST,
         llamacpp_host=llamacpp_host or DEFAULT_LLAMACPP_HOST,
         api_key=api_key,
+        llamacpp_launched=llamacpp_launched,
     )
 
 

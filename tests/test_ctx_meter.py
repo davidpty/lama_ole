@@ -223,6 +223,25 @@ def test_resolve_num_ctx_option_wins():
     assert chat._resolve_ctx_max(st) == 16384
 
 
+def test_resolve_llamacpp_ignores_num_ctx_option():
+    show = SimpleNamespace(parameters="", modelinfo={"llama.context_length": 4096})
+    client = _FakeClient(show=show)
+    st = _state(client=client, model="llamacpp:q.gguf", options={"num_ctx": 65536})
+    assert chat._resolve_ctx_max(st) == 4096
+
+
+def test_resolve_llamacpp_uses_ps_context():
+    client = _FakeClient(ps_models=[_FakePsModel("llamacpp:q.gguf", 8192)])
+    st = _state(client=client, model="llamacpp:q.gguf", options={"num_ctx": 65536})
+    assert chat._resolve_ctx_max(st) == 8192
+
+
+def test_is_llamacpp_model():
+    assert chat._is_llamacpp_model("llamacpp:q.gguf") is True
+    assert chat._is_llamacpp_model("ollama:gemma2:2b") is False
+    assert chat._is_llamacpp_model(None) is False
+
+
 def test_resolve_env_override(monkeypatch):
     client = _FakeClient(ps_models=[_FakePsModel("test:model", 100000)])
     st = _state(client=client)

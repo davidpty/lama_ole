@@ -434,3 +434,108 @@ def test_ollama_client_delegation(monkeypatch):
     assert sdk.generate_calls == [("q:1", 0)]
 
 # Note: OllamaClient.list() returns bare IDs; Router adds prefix via _merged()
+
+
+# -- launch-time options & warnings ------------------------------------------
+
+
+def test_build_payload_forwards_sampling_options():
+    client = LlamaCppClient(host="http://x")
+    payload = client._build_payload(
+        "q.gguf",
+        [{"role": "user", "content": "hi"}],
+        None,
+        {
+            "temperature": 0.7,
+            "top_p": 0.9,
+            "top_k": 40,
+            "repeat_penalty": 1.1,
+            "presence_penalty": 0.5,
+            "frequency_penalty": 0.2,
+            "min_p": 0.05,
+            "seed": 42,
+            "num_predict": 200,
+        },
+    )
+    assert payload["temperature"] == 0.7
+    assert payload["top_p"] == 0.9
+    assert payload["top_k"] == 40
+    assert payload["repeat_penalty"] == 1.1
+    assert payload["presence_penalty"] == 0.5
+    assert payload["frequency_penalty"] == 0.2
+    assert payload["min_p"] == 0.05
+    assert payload["seed"] == 42
+    assert payload["max_tokens"] == 200
+    assert "num_ctx" not in payload
+    assert "num_gpu" not in payload
+
+
+def test_num_ctx_warning_reports_server_ctx(capsys):
+    stream = sse_body(content_chunk("ok"), final_chunk())
+    with FakeLlamaServer(streams=[stream], n_ctx=8192) as server:
+        client = LlamaCppClient(host=server.url)
+        list(client.chat(
+            "q.gguf",
+            [{"role": "user", "content": "hi"}],
+            options={"num_ctx": 65536},
+        ))
+    err = capsys.readouterr().err
+    assert "option 'num_ctx' is ignored" in err
+    assert "server context is 8192" in err
+
+
+def test_num_ctx_warning_is_one_time(capsys):
+    stream = sse_body(content_chunk("ok"), final_chunk())
+    with FakeLlamaServer(streams=[stream]) as server:
+        client = LlamaCppClient(host=server.url)
+        for _ in range(2):
+            list(client.chat(
+                "q.gguf",
+                [{"role": "user", "content": "hi"}],
+                options={"num_ctx": 65536},
+            ))
+    err = capsys.readouterr().err
+    assert err.count("option 'num_ctx' is ignored") == 1
+
+
+def test_keep_alive_warning_for_external_server(capsys):
+    stream = sse_body(content_chunk("ok"), final_chunk())
+    with FakeLlamaServer(streams=[stream]) as server:
+        client = LlamaCppClient(host=server.url)
+        list(client.chat(
+            "q.gguf",
+            [{"role": "user", "content": "hi"}],
+            keep_alive="5m",
+        ))
+    err = capsys.readouterr().err
+    assert "--keep_alive is ignored" in err
+    assert "--sleep-idle-seconds" in err
+
+
+def test_launched_server_suppresses_all_warnings(capsys):
+    stream = sse_body(content_chunk("ok"), final_chunk())
+    with FakeLlamaServer(streams=[stream]) as server:
+        client = LlamaCppClient(host=server.url, launched=True)
+        list(client.chat(
+            "q.gguf",
+            [{"role": "user", "content": "hi"}],
+            options={"num_ctx": 8192, "num_gpu": 99},
+            keep_alive="1h",
+        ))
+    assert capsys.readouterr().err == ""
+
+
+def test_router_llamacpp_launched_suppresses_warnings(capsys):
+    stream = sse_body(content_chunk("ok"), final_chunk())
+    with FakeLlamaServer(streams=[stream]) as server:
+        router = create_router(
+            ollama_host="http://127.0.0.1:1",
+            llamacpp_host=server.url,
+            llamacpp_launched=True,
+        )
+        list(router.chat(
+            model="llamacpp:q.gguf",
+            messages=[{"role": "user", "content": "hi"}],
+            options={"num_ctx": 8192},
+        ))
+    assert capsys.readouterr().err == ""

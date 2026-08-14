@@ -41,11 +41,14 @@ class LlamaCppClient(ModelClient):
 
     name = "llamacpp"
 
-    def __init__(self, host=None, api_key=None):
+    def __init__(self, host=None, api_key=None, launched=False):
         self.host = (host or "http://localhost:8080").rstrip("/")
         self.api_key = api_key
+        self.launched = launched
         self._warned = set()
         self._tool_acc = []
+        self._server_ctx = None
+        self._server_ctx_fetched = False
 
     # -- HTTP plumbing -------------------------------------------------------
 
@@ -158,33 +161,64 @@ class LlamaCppClient(ModelClient):
                 "top_p": "top_p",
                 "top_k": "top_k",
                 "num_predict": "max_tokens",
+                "repeat_penalty": "repeat_penalty",
+                "presence_penalty": "presence_penalty",
+                "frequency_penalty": "frequency_penalty",
+                "min_p": "min_p",
+                "seed": "seed",
             }
             for key, value in options.items():
                 okey = mapping.get(key)
                 if okey is None or value is None:
                     continue
                 opts[okey] = value
-            for key in ("num_ctx", "num_gpu", "repeat_penalty"):
-                if options.get(key) is not None and key not in self._warned:
+            for key in ("num_ctx", "num_gpu"):
+                if options.get(key) is not None and not self.launched and key not in self._warned:
                     self._warned.add(key)
                     print(
-                        "[llamacpp] option '%s' is ignored (the llama.cpp "
-                        "server configures its own context/sampling)" % key,
+                        "[llamacpp] option '%s' is ignored (%s)" % (
+                            key, self._ignored_reason(key)
+                        ),
                         file=sys.stderr,
                     )
         if opts:
             payload.update(opts)
         return payload
 
+    def _ignored_reason(self, key):
+        """Explain why a server-managed option is ignored (one-time warning)."""
+        if key == "num_ctx":
+            ctx = self._load_server_ctx()
+            if ctx:
+                return (
+                    "the server context is %d; launch with -c/--ctx-size "
+                    "to change it" % ctx
+                )
+            return "the server configures its own context at launch (-c/--ctx-size)"
+        return "the server manages its own context/sampling at launch"
+
+    def _load_server_ctx(self):
+        """Best-effort, cached lookup of the server's configured n_ctx."""
+        if self._server_ctx_fetched:
+            return self._server_ctx
+        self._server_ctx_fetched = True
+        try:
+            info = self.show(None)
+            self._server_ctx = (info.modelinfo or {}).get("llama.context_length")
+        except Exception:
+            self._server_ctx = None
+        return self._server_ctx
+
     # -- chat ------------------------------------------------------------------
 
     def chat(self, model, messages, stream=True, tools=None, options=None,
              keep_alive=None):
-        if keep_alive is not None and "keep_alive" not in self._warned:
+        if keep_alive is not None and not self.launched and "keep_alive" not in self._warned:
             self._warned.add("keep_alive")
             print(
                 "[llamacpp] --keep_alive is ignored (the llama.cpp server "
-                "manages the model lifecycle)",
+                "keeps its model resident; launch with --sleep-idle-seconds "
+                "to unload after idle)",
                 file=sys.stderr,
             )
         payload = self._build_payload(model, messages, tools, options)

@@ -124,6 +124,11 @@ python3 lama_ole.py -m llamacpp.qwen2.5-7b-instruct-q4_k_m.gguf -i "Hello!"
   `LAMA_OLE_LLAMACPP_HOST` is still honored with a deprecation warning.
 - `LAMA_OLE_HOST_LLAMACPP_API_KEY` — sent as a `Bearer` token if the server is
   configured with an API key (legacy `LAMA_OLE_LLAMACPP_API_KEY` still honored).
+- `--llamacpp-autostart` / `--no-llamacpp-autostart` (env
+  `LAMA_OLE_LLAMACPP_AUTOSTART`, default **on**) — start a `llama-server` when
+  none is running; see "Supported features" for what it serves and how it is
+  configured (`LAMA_OLE_LLAMACPP_BIN`, `LAMA_OLE_LLAMACPP_MODELS_DIR`,
+  `LAMA_OLE_LLAMACPP_ARGS`, `LAMA_OLE_LLAMACPP_STOP_ON_EXIT`).
 
 Both hosts can be set in the env file
 (`~/.config/lama_ole/lama_ole.env` or `./lama_ole.env`).
@@ -150,8 +155,24 @@ Streaming, tool calling, thinking display (`-t`, `--thoughtlog`), the context
 meter, `/stats`, compaction, and `/model` switching all work against both
 backends. llama.cpp specifics:
 
-- `--num_ctx`, `--num_gpu`, `--keep_alive` are ignored (the server manages its
-  own context window and lifecycle); a one-time warning is printed.
+- When no llama-server answers at the llama.cpp host, lama_ole **auto-starts
+  one** (default on; `--no-llamacpp-autostart` or
+  `LAMA_OLE_LLAMACPP_AUTOSTART=false` disables it). The router then serves the
+  llama.cpp cache (`$LLAMA_CACHE` or `~/.cache/llama.cpp`) or
+  `LAMA_OLE_LLAMACPP_MODELS_DIR`, so `/model` completion works from the first
+  run; an explicit `-m llamacpp.<file>` is served directly (`-m <path>
+  --alias`), and `owner/name[:tag]` ids are loaded via `--hf-repo`. Binary:
+  `LAMA_OLE_LLAMACPP_BIN` or `llama-server` on PATH; extra args via
+  `LAMA_OLE_LLAMACPP_ARGS`. The launched server stays running after exit so
+  later runs reuse it (set `LAMA_OLE_LLAMACPP_STOP_ON_EXIT=true` to kill it).
+- When lama_ole starts the server, `--num_ctx`, `--num_gpu`, and `--keep_alive`
+  are honored at launch (`-c`, `-ngl`, `--sleep-idle-seconds`). Against a
+  server it did not start, they are ignored with a one-time actionable warning
+  (the `num_ctx` warning reports the server's actual window from `/props`).
+- Per-request sampling options (`--temperature`, `--top_p`, `--top_k`,
+  `--repeat_penalty`, `--presence_penalty`, `--frequency_penalty`, `--min_p`,
+  `--seed`) are forwarded to the server; `num_ctx`/`num_gpu` are never sent
+  per request.
 - `--ollama_websearch` is unavailable and skipped with a warning.
 - Media-understanding tools and `--transfer` remain Ollama-only.
 
@@ -853,6 +874,11 @@ the configured default.
 | `LAMA_OLE_HOST_OLLAMA` | string | `--host` |
 | `LAMA_OLE_HOST_LLAMACPP` | string | `--llamacpp-host` |
 | `LAMA_OLE_HOST_LLAMACPP_API_KEY` | string | — (llama.cpp Bearer auth) |
+| `LAMA_OLE_LLAMACPP_AUTOSTART` | boolean | `--llamacpp-autostart` / `--no-llamacpp-autostart` |
+| `LAMA_OLE_LLAMACPP_BIN` | string | — (llama-server binary path) |
+| `LAMA_OLE_LLAMACPP_MODELS_DIR` | string | — (models dir for the autostarted router) |
+| `LAMA_OLE_LLAMACPP_ARGS` | string | — (extra llama-server args) |
+| `LAMA_OLE_LLAMACPP_STOP_ON_EXIT` | boolean | — (kill autostarted server on exit) |
 | `LAMA_OLE_MODEL` | string | `-m, --model` |
 | `LAMA_OLE_TEMPERATURE` | number | `--temperature` |
 | `LAMA_OLE_NUM_CTX` | integer | `--num_ctx` |

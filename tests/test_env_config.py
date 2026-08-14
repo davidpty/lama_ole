@@ -286,6 +286,7 @@ class TestExampleConfig:
         "lama_ole.py",
         "chat.py",
         "history.py",
+        os.path.join("backends", "llamacpp_launcher.py"),
         os.path.join("tool_base", "engine.py"),
         os.path.join("lsp", "registry.py"),
         os.path.join("lsp", "session.py"),

@@ -854,16 +854,27 @@ def _ensure_ctx_max(state: ChatState) -> None:
     running model's allocated context (client.ps) -> the model's num_ctx
     parameter -> the model's declared capacity (client.show). Returns None
     when nothing is known, in which case the meter shows token counts without
-    a percentage.
+    a percentage. For llama.cpp models the server's window (allocated at
+    launch) is authoritative, so the --num_ctx shortcut is skipped.
     """
     if state.ctx_max is not None:
         return
     state.ctx_max = _resolve_ctx_max(state)
 
 
+def _is_llamacpp_model(model_id) -> bool:
+    """True when ``model_id`` belongs to the llama.cpp backend.
+
+    The llama.cpp server allocates its context at launch, so ``--num_ctx``
+    (honored there, not per request) must not skew the meter against the
+    server-reported window.
+    """
+    return isinstance(model_id, str) and model_id.startswith("llamacpp:")
+
+
 def _resolve_ctx_max(state: ChatState):
     num_ctx = (state.options or {}).get("num_ctx")
-    if num_ctx:
+    if num_ctx and not _is_llamacpp_model(state.model):
         return int(num_ctx)
 
     override = os.environ.get("LAMA_OLE_CTX_SIZE")

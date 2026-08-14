@@ -25,9 +25,12 @@ class RouterClient(ModelClient):
 
     name = "router"
 
-    def __init__(self, ollama_host=None, llamacpp_host=None, api_key=None):
+    def __init__(self, ollama_host=None, llamacpp_host=None, api_key=None,
+                 llamacpp_launched=False):
         self._ollama = OllamaClient(host=ollama_host)
-        self._llamacpp = LlamaCppClient(host=llamacpp_host, api_key=api_key)
+        self._llamacpp = LlamaCppClient(
+            host=llamacpp_host, api_key=api_key, launched=llamacpp_launched
+        )
         self._clients = {"ollama": self._ollama, "llamacpp": self._llamacpp}
         self._probe_ts = {"ollama": 0.0, "llamacpp": 0.0}
         self._probe_ok = {"ollama": False, "llamacpp": False}

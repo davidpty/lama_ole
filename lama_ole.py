@@ -199,6 +199,17 @@ def _llamacpp_api_key_env():
     return None
 
 
+def _llamacpp_bare_model(model_id):
+    """Return the bare llama.cpp model id for an ``llamacpp:`` model, else None.
+
+    Matches the routing prefix in ``backends.names`` exactly (no deprecation
+    warning for unrelated bare names).
+    """
+    if model_id and model_id.startswith("llamacpp:"):
+        return model_id[len("llamacpp:"):]
+    return None
+
+
 def _env_choice(name, default, choices):
     value = os.environ.get(name)
     if not value:
@@ -332,6 +343,17 @@ def build_parser():
         type=str,
         default=_env_str("LAMA_OLE_KEEP_ALIVE", None),
         help="Keep model in memory (e.g., '5m', '1h' or a number of seconds)"
+    )
+
+    # Parameter: llama.cpp server autostart
+    parser.add_argument(
+        "--llamacpp-autostart",
+        action=argparse.BooleanOptionalAction,
+        default=_env_bool("LAMA_OLE_LLAMACPP_AUTOSTART", True),
+        help="Start a llama-server automatically when no llama.cpp server is "
+             "running (models come from the llama.cpp cache or "
+             "LAMA_OLE_LLAMACPP_MODELS_DIR); use --no-llamacpp-autostart to "
+             "disable",
     )
 
     # Parameter: list
@@ -725,10 +747,37 @@ def main():
 
     ollama_host = _normalize_host_with_default(args.ollama_host, 11434)
     llamacpp_host = _normalize_host_with_default(args.llamacpp_host, 8080)
+
+    # Auto-start the llama.cpp server when needed (and honor its launch-time
+    # options). Runs before create_router() so the router's first list() — the
+    # source for /model completion — already sees the server.
+    llamacpp_launched = False
+    if args.llamacpp_autostart and not (
+        args.list or args.ps or args.stop or args.transfer
+    ):
+        from backends import llamacpp_launcher
+
+        model_id = _llamacpp_bare_model(args.model)
+        launch_options = {}
+        if args.num_ctx is not None:
+            launch_options["num_ctx"] = args.num_ctx
+        if args.num_gpu is not None:
+            launch_options["num_gpu"] = args.num_gpu
+        launched = llamacpp_launcher.ensure_server(
+            host=llamacpp_host,
+            model_id=model_id,
+            options=launch_options,
+            keep_alive=args.keep_alive,
+            api_key=_llamacpp_api_key_env(),
+            autostart=args.llamacpp_autostart,
+        )
+        llamacpp_launched = launched is not None
+
     client = create_router(
         ollama_host=ollama_host,
         llamacpp_host=llamacpp_host,
         api_key=_llamacpp_api_key_env(),
+        llamacpp_launched=llamacpp_launched,
     )
 
     # Propagate host and vision models to tools
