@@ -321,14 +321,22 @@ def _complete_file_path(partial: str) -> list:
     return matches
 
 
+def _path_is_within_directory(path: str, directory: str) -> bool:
+    """Return True when ``path`` resolves inside ``directory``."""
+    try:
+        path_real = os.path.realpath(path)
+        directory_real = os.path.realpath(directory)
+        return os.path.commonpath([path_real, directory_real]) == directory_real
+    except (OSError, ValueError):
+        return False
+
+
 def _toolset_segment_dir(tools_dir: str, seg: str):
     """Resolve a leading dotted segment of a module path to a package directory.
 
     ``tools`` maps to the tools directory itself. Any other segment resolves to
-    a subpackage inside ``tools/`` (``tools_dir/<seg>``) first, falling back to
-    a sibling package at the same level as ``tools/`` (the parent of
-    ``tools_dir``), so tools can live in packages like ``tools_security`` or
-    ``mycompany``. Returns ``(abs_dir, module_prefix)`` or ``(None, None)``.
+    a subpackage inside ``tools/`` (``tools_dir/<seg>``). Returns
+    ``(abs_dir, module_prefix)`` or ``(None, None)``.
     """
     if seg == "tools":
         return tools_dir, "tools"
@@ -337,11 +345,6 @@ def _toolset_segment_dir(tools_dir: str, seg: str):
     sub = os.path.join(tools_dir, seg)
     if os.path.isdir(sub) and os.path.isfile(os.path.join(sub, "__init__.py")):
         return sub, f"tools.{seg}"
-    parent = os.path.dirname(tools_dir)
-    if parent:
-        sib = os.path.join(parent, seg)
-        if os.path.isdir(sib) and os.path.isfile(os.path.join(sib, "__init__.py")):
-            return sib, seg
     return None, None
 
 
@@ -350,11 +353,11 @@ def _complete_toolset_module(partial: str, tools_dir: str = None) -> list:
 
     Bare names complete against the tools package (only modules that are real
     tool modules). Dotted names descend into package directories: the first
-    segment resolves to a physical package dir (the tools dir, a subpackage of
-    it, or a sibling package next to it) and each following segment walks into
-    a subpackage. Leaf modules are offered only when they are tool modules
-    (they import ``@tool`` from ``tool_base``); package dirs are always offered
-    with a trailing dot so Tab keeps descending into them.
+    segment resolves to a physical package dir inside the tools tree and each
+    following segment walks into a subpackage. Leaf modules are offered only
+    when they are tool modules (they import ``@tool`` from ``tool_base``);
+    package dirs are always offered with a trailing dot so Tab keeps descending
+    into them.
     """
     if tools_dir is None:
         from tool_base.registry import _TOOLS_PACKAGE_DIR
@@ -499,31 +502,53 @@ def _model_completion_candidates(list_models: callable, partial: str) -> list:
 _SKILL_FILE_EXTENSIONS = (".md", ".txt")
 
 
-def _is_skill_path_candidate(candidate: str) -> bool:
-    """Keep directories and ``.md``/``.txt`` skill files from path completion.
-
-    Directories (trailing separator) are always kept so Tab keeps descending;
-    files are kept only when they are skill files and not private (``_``-prefixed).
-    """
-    if candidate.endswith(os.sep):
-        return True
-    base = os.path.basename(candidate)
-    return base.endswith(_SKILL_FILE_EXTENSIONS) and not base.startswith("_")
+def _complete_skill_path(partial: str, skills_dir: str) -> list:
+    """Completion candidates for a path rooted inside the skills directory."""
+    if skills_dir is None:
+        skills_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "skills")
+    partial = os.path.expanduser(partial)
+    dirname, basename = os.path.split(partial)
+    if dirname == "":
+        return []
+    search_dir = dirname if os.path.isabs(partial) else os.path.join(skills_dir, dirname)
+    try:
+        entries = sorted(os.listdir(search_dir))
+    except OSError:
+        return []
+    display_dir = dirname if dirname not in ("", ".") else ""
+    out = []
+    for name in entries:
+        if not name.startswith(basename):
+            continue
+        full = os.path.join(search_dir, name)
+        if not _path_is_within_directory(full, skills_dir):
+            continue
+        if os.path.isdir(full):
+            candidate = os.path.join(display_dir, name) if display_dir else name
+            out.append(candidate + os.sep)
+        elif (
+            os.path.isfile(full)
+            and name.endswith(_SKILL_FILE_EXTENSIONS)
+            and not name.startswith("_")
+        ):
+            candidate = os.path.join(display_dir, name) if display_dir else name
+            out.append(candidate)
+    return out
 
 
 def _skill_load_completion_candidates(skills_dir: str, partial: str) -> list:
-    """Completion candidates for /skill load: skills-dir names plus file paths.
+    """Completion candidates for /skill load: skill names or rooted paths.
 
     Skill files are offered by their stem (``code-reviewer.md`` →
     ``code-reviewer``) because ``_resolve_skill_path`` accepts the bare name.
-    Bare names resolve against the skills directory; slash-form names are plain
-    file paths resolved against the working directory, so file-path candidates
-    are merged in and filtered to directories and ``.md``/``.txt`` skill files
-    (``dirname/`` + Tab shows the skills inside that directory).
+    If the partial contains a path separator, completion stays rooted in the
+    skills directory so Tab does not leak unrelated cwd files into the picker.
     """
     out = []
     if skills_dir is None:
         skills_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "skills")
+    if os.sep in partial or (os.altsep and os.altsep in partial):
+        return _complete_skill_path(partial, skills_dir)
     if os.path.isdir(skills_dir):
         for name in sorted(os.listdir(skills_dir)):
             if not name.endswith(_SKILL_FILE_EXTENSIONS) or name.startswith("_"):
@@ -531,9 +556,6 @@ def _skill_load_completion_candidates(skills_dir: str, partial: str) -> list:
             stem = os.path.splitext(name)[0]
             if stem.startswith(partial):
                 out.append(stem)
-    for f in _complete_file_path(partial):
-        if _is_skill_path_candidate(f) and f not in out:
-            out.append(f)
     return out
 
 
@@ -1415,6 +1437,7 @@ def run_chat(state: ChatState):
     _bind_mode_toggle(state)
     _install_typeahead_replay(state)
     use_color = color_util.color_mode_enabled(state.color)
+    output_format = history_mod.parse_output_format()
     if state.ctx_meter:
         _ensure_ctx_max(state)
     base_prompt = color_util.colored(">>> ", color_util.C_PROMPT, use_color)
@@ -1490,6 +1513,7 @@ def run_chat(state: ChatState):
                     metrics=metrics,
                     mode_state=state,
                     show_diff=state.show_diff,
+                    output_format=output_format,
                 )
             finally:
                 state.stop_hotkey_listener()
@@ -1722,6 +1746,7 @@ def _cmd_feed(path: str, state: ChatState):
             state_manager=state.state_manager,
             metrics=metrics,
             show_diff=state.show_diff,
+            output_format=history_mod.parse_output_format(),
         )
         state.ctx_usage = metrics
         state.ctx_usage_model = state.model
@@ -2269,10 +2294,10 @@ def _replay_history(state: ChatState, use_color: bool) -> None:
     """Replay a resumed session as a numbered listing, identical to /history.
 
     Rendering delegates to the shared history model (``format_list_entry``)
-    with the replay view's line templates (``LAMA_OLE_FORMAT_REPLAY`` on top
-    of ``LAMA_OLE_FORMAT``), so a resumed session matches /history unless
-    configured independently. Stored edit diffs are printed after tool
-    entries when ``show_diff`` is on, mirroring live edit display.
+    with the replay view's line templates (``LAMA_OLE_FORMAT_REPLAY``), so a
+    resumed session matches /history unless configured independently. Stored
+    edit diffs are printed after tool entries when ``show_diff`` is on,
+    mirroring live edit display.
     """
     formats = history_mod.parse_line_formats("replay")
     for entry in state.get_history_entries():
@@ -2567,17 +2592,25 @@ def _list_skill_files(state: ChatState) -> list:
 def _resolve_skill_path(name: str, state: ChatState) -> str:
     """Resolve a skill name to a file path.
 
-    Absolute/relative paths that exist are used as-is; otherwise the name is
-    looked up in the skills directory (trying <name>.md, <name>.txt, <name>).
+    Names are resolved inside the skills directory only. Bare names and
+    relative path-style names (e.g. ``subdir/web``) are looked up inside the
+    skills directory, trying ``<name>``, ``<name>.md`` and ``<name>.txt``.
+    Absolute paths are accepted only when they resolve inside the skills tree.
     """
-    if os.path.exists(name):
-        return name
     skills_dir = _default_skills_dir(state)
-    for candidate in (f"{name}.md", f"{name}.txt", name):
-        path = os.path.join(skills_dir, candidate)
-        if os.path.exists(path):
-            return path
-    return name
+    if not skills_dir:
+        return name
+    if os.path.isabs(name):
+        bases = [name]
+    else:
+        bases = [os.path.join(skills_dir, name)]
+    for base in bases:
+        for candidate in (base, f"{base}.md", f"{base}.txt"):
+            if os.path.exists(candidate) and _path_is_within_directory(
+                candidate, skills_dir
+            ):
+                return candidate
+    return None
 
 
 def _read_text_file(path: str, label: str = "file") -> str:
@@ -2623,6 +2656,9 @@ def _load_skill_texts(names: list, state: ChatState):
     parts = []
     for name in names:
         path = _resolve_skill_path(name, state)
+        if path is None:
+            print(f"Error: skill not found: {name}")
+            return None
         text = _read_skill_text(path)
         if text is None:
             return None
@@ -2735,31 +2771,35 @@ def _show_tools_usage():
     print("  /tools unload <toolset> [<toolset> ...] Unload one or more toolsets")
 
 
-def _resolve_toolset_module(name: str) -> str:
+def _resolve_toolset_module(name: str, tools_dir: str = None) -> str:
     """Map a user-supplied toolset name to an importable module name.
 
-    Bare names (e.g. ``dev_tools``) resolve to the tools package first
-    (``tools.dev_tools``), falling back to a top-level module. Dotted names
-    resolve inside the tools package first (``tools.<name>``, so subpackages
-    of ``tools/`` work), falling back to the dotted name as-is (sibling
-    packages like ``tools_security``).
+    Bare names (e.g. ``dev_tools``) resolve inside the tools package first
+    (``tools.dev_tools``). Dotted names resolve inside the tools package
+    hierarchy (``tools.<name>``, so subpackages of ``tools/`` work). Only leaf
+    module files inside the tools tree that export ``@tool`` functions are
+    accepted.
     """
-    if "." in name:
-        for c in (f"tools.{name}", name):
-            try:
-                if importlib.util.find_spec(c) is not None:
-                    return c
-            except (ImportError, ModuleNotFoundError, AttributeError):
-                continue
-        return name
-    candidates = [f"tools.{name}", name]
-    for c in candidates:
-        try:
-            if importlib.util.find_spec(c) is not None:
-                return c
-        except (ImportError, ModuleNotFoundError, AttributeError):
-            continue
-    return candidates[0]
+    if tools_dir is None:
+        from tool_base.registry import _TOOLS_PACKAGE_DIR
+        tools_dir = _TOOLS_PACKAGE_DIR
+    candidate = name if name.startswith("tools.") else f"tools.{name}"
+    try:
+        spec = importlib.util.find_spec(candidate)
+    except (ImportError, ModuleNotFoundError, AttributeError, ValueError):
+        return None
+    if spec is None or not spec.origin:
+        return None
+    origin = spec.origin
+    if origin in ("built-in", "frozen") or os.path.basename(origin) == "__init__.py":
+        return None
+    if not origin.endswith(".py"):
+        return None
+    if not _path_is_within_directory(origin, tools_dir):
+        return None
+    if not module_file_has_tools(origin):
+        return None
+    return candidate
 
 
 def _print_tool(t: Tool) -> None:
@@ -2811,7 +2851,7 @@ def _list_available_toolsets(state: ChatState):
     loaded = set(state.loaded_tool_modules)
     print("Available toolsets:")
     for n in names:
-        fq = _resolve_toolset_module(n)
+        fq = _resolve_toolset_module(n, state.tools_dir)
         marker = "  (loaded)" if fq in loaded else ""
         print(f"  {n}{marker}")
 
@@ -2820,7 +2860,10 @@ def _show_toolset(name: str, state: ChatState):
     if not name:
         print("Usage: /tools show <toolsetname>")
         return
-    module_name = _resolve_toolset_module(name)
+    module_name = _resolve_toolset_module(name, state.tools_dir)
+    if module_name is None:
+        print(f"Error: unknown toolset '{name}'.")
+        return
     short = module_name.rsplit(".", 1)[-1]
     tools = _resolve_toolset_tools(state, module_name)
     if tools is None:
@@ -2840,7 +2883,9 @@ def _list_all_tools(state: ChatState):
         return
     loaded = set(state.loaded_tool_modules)
     for n in names:
-        module_name = _resolve_toolset_module(n)
+        module_name = _resolve_toolset_module(n, state.tools_dir)
+        if module_name is None:
+            continue
         tools = _resolve_toolset_tools(state, module_name)
         if tools is None:
             tools = []
@@ -2862,7 +2907,11 @@ def _tools_load(names: str, state: ChatState):
     to_load = []
     ok = True
     for name in names:
-        module_name = _resolve_toolset_module(name)
+        module_name = _resolve_toolset_module(name, state.tools_dir)
+        if module_name is None:
+            print(f"Error: unknown toolset '{name}'.")
+            ok = False
+            continue
         short = module_name.rsplit(".", 1)[-1]
         if module_name in already:
             print(f"Toolset '{short}' is already loaded.")
@@ -2904,7 +2953,11 @@ def _tools_unload(names: str, state: ChatState):
     to_remove = []
     ok = True
     for name in names:
-        module_name = _resolve_toolset_module(name)
+        module_name = _resolve_toolset_module(name, state.tools_dir)
+        if module_name is None:
+            print(f"Error: toolset '{name}' is not loaded.")
+            ok = False
+            continue
         if module_name not in loaded:
             print(f"Error: toolset '{name}' is not loaded.")
             ok = False
@@ -2912,13 +2965,11 @@ def _tools_unload(names: str, state: ChatState):
             to_remove.append(module_name)
     if not ok:
         return
-    remove_tools = []
-    for module_name in to_remove:
-        remove_tools.extend(get_tools_of_module(module_name))
-    state.loaded_tool_modules = [
-        m for m in state.loaded_tool_modules if m not in set(to_remove)
-    ]
-    state.loaded_tools = [t for t in state.loaded_tools if t not in remove_tools]
+    remaining = [m for m in state.loaded_tool_modules if m not in set(to_remove)]
+    state.loaded_tool_modules = remaining
+    state.loaded_tools = []
+    for module_name in remaining:
+        state.loaded_tools.extend(get_tools_of_module(module_name))
     state.refresh_ollama_tools()
     short_names = " ".join(m.rsplit(".", 1)[-1] for m in to_remove)
     autosave_session(state)

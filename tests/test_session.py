@@ -38,11 +38,16 @@ def _load_cli_module():
 
 CLI = _load_cli_module()
 
-# Keep LAMA_OLE_FORMAT* out of this module's tests under both pytest and
-# `unittest discover`: history/replay rendering reads them at call time, so a
+# Keep LAMA_OLE_FORMAT_{HISTORY,REPLAY,OUTPUT} out of this module's tests under
+# both pytest and `unittest discover`: history/replay rendering reads them at
+# call time, so a
 # developer's shell exports would silently change the expected output. The
 # vars are saved before the module runs and restored afterwards.
-_FORMAT_ENV_VARS = ("LAMA_OLE_FORMAT", "LAMA_OLE_FORMAT_HISTORY", "LAMA_OLE_FORMAT_REPLAY")
+_FORMAT_ENV_VARS = (
+    "LAMA_OLE_FORMAT_HISTORY",
+    "LAMA_OLE_FORMAT_REPLAY",
+    "LAMA_OLE_FORMAT_OUTPUT",
+)
 _FORMAT_ENV_BACKUP = {}
 
 
@@ -156,9 +161,9 @@ class SessionSerializeTest(unittest.TestCase):
             {"role": "tool", "content": "[data from ...]", "tool_name": "get_weather"},
         ]
         env = {
-            "LAMA_OLE_FORMAT": "tool_result=[{num}] {role}: {text}",
             "LAMA_OLE_FORMAT_HISTORY": "",
-            "LAMA_OLE_FORMAT_REPLAY": "",
+            "LAMA_OLE_FORMAT_REPLAY": "tool_result=[{num}] {role}: {text}",
+            "LAMA_OLE_FORMAT_OUTPUT": "",
         }
         with patch.dict(os.environ, env):
             buf = io.StringIO()

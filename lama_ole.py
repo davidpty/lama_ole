@@ -39,6 +39,7 @@ from backends import (
     create_router,
 )
 import color_util
+import history as history_mod
 from chat import (
     ChatState,
     _drop_incomplete_trailing_messages,
@@ -1041,6 +1042,7 @@ def main():
                         color=args.color,
                         state_manager=state.state_manager,
                         metrics=metrics,
+                        output_format=history_mod.parse_output_format(),
                     )
                     state.ctx_usage = metrics
                     state.ctx_usage_model = args.model

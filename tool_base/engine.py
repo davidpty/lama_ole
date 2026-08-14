@@ -5,6 +5,7 @@ import time
 from typing import Any, Optional, List
 
 import color_util
+import history as history_mod
 
 from .models import Tool
 from .constants import DANGEROUS_TOOLS
@@ -156,6 +157,7 @@ def run_with_tools(
     ollama_websearch: bool = False,
     ndjson_log_file_handle=None,
     color: str = "auto",
+    output_format=None,
     state_manager=None,
     metrics: Optional[dict] = None,
     mode_state=None,
@@ -220,6 +222,10 @@ def run_with_tools(
     toolcall_logger = (
         StateLogger(handle=toolcall_file_handle) if toolcall_file_handle else None
     )
+    live_output_started = False
+    live_output_hidden = False
+    live_output_suffix = ""
+    live_output_entry = None
 
     has_system = any(m.get("role") == "system" for m in messages)
     if not has_system:
@@ -359,6 +365,10 @@ def run_with_tools(
         round_started = time.monotonic()
         if turn_elapsed_started is None:
             turn_elapsed_started = round_started
+        live_output_started = False
+        live_output_hidden = False
+        live_output_suffix = ""
+        live_output_entry = None
 
         tools_for_request = _refresh_tools_for_request()
 
@@ -416,8 +426,37 @@ def run_with_tools(
                                 print()
                         elif state_manager.current_state != ExecutionState.OUTPUTTING:
                             state_manager.transition_to(ExecutionState.OUTPUTTING)
+                        if output_format is not None and not live_output_started and not live_output_hidden:
+                            live_output_entry = {
+                                "num": len(history_mod.history_entries(messages)) + 1,
+                                "type": "output",
+                                "msg": {
+                                    "role": "assistant",
+                                    "content": "",
+                                    "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
+                                },
+                            }
+                            rendered = history_mod.format_output_entry(
+                                live_output_entry,
+                                use_color,
+                                formats=output_format,
+                            )
+                            if rendered is None:
+                                live_output_hidden = True
+                            else:
+                                prefix, live_output_suffix = rendered
+                                if prefix:
+                                    print(prefix, end="", flush=True)
+                                live_output_started = True
                         response_content += msg.content
-                        print(color_util.colored(msg.content, color_util.C_OUTPUT, use_color), end='', flush=True)
+                        if not live_output_hidden:
+                            print(
+                                color_util.colored(
+                                    msg.content, color_util.C_OUTPUT, use_color
+                                ),
+                                end="",
+                                flush=True,
+                            )
                         if output_logger:
                             output_logger.write_output(msg.content)
 
@@ -441,6 +480,9 @@ def run_with_tools(
                 print()
                 print(color_util.colored(f"[{ts}] Thinking ends", color_util.C_THINK, use_color))
                 print()
+
+        if live_output_started and live_output_suffix:
+            print(live_output_suffix, end="", flush=True)
 
         print()
 

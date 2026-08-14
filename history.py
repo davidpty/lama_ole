@@ -9,9 +9,9 @@ centralizes the concepts they share so the two features cannot diverge:
 - selector parsing (``/history`` and ``/cut`` share the same syntax, but
   bare numbers differ: ``/history N`` shows the first N entries while
   ``/cut N`` keeps from entry N to the end — see ``parse_cut_selectors``)
-- line rendering, driven by a template so ``/history`` and session replay
-  look the same (each view can be tuned independently on top of a shared
-  base — see ``parse_line_formats``)
+- line rendering, driven by per-view templates so ``/history`` and session
+  replay can be tuned independently (see ``parse_line_formats`` and
+  ``parse_output_format``)
 
 Line templates are ``str.format_map`` strings with a small token set:
 ``{num}`` (entry number), ``{ts}`` (``[<time>] `` when the message carries a
@@ -49,6 +49,7 @@ _TYPE_ALIASES = {
 }
 
 _DEFAULT_TEMPLATE = "[{num}] {ts}{role}: {text}"
+_DEFAULT_OUTPUT_TEMPLATE = "{text}"
 
 _DEFAULT_FORMATS = {t: _DEFAULT_TEMPLATE for t in _FORMAT_TYPES}
 _DEFAULT_FORMATS["tool_result"] = ""
@@ -275,7 +276,7 @@ def _text(content):
 
 
 def _apply_format_spec(formats, spec):
-    """Apply one ``LAMA_OLE_FORMAT*`` value onto a resolved formats dict.
+    """Apply one format value onto a resolved formats dict.
 
     A bare value (no ``=``) becomes the template for every visible entry
     type; otherwise semicolon-separated ``type=template`` pairs override
@@ -312,30 +313,39 @@ def _apply_format_spec(formats, spec):
 
 
 _VIEW_ENV = {
-    "base": "LAMA_OLE_FORMAT",
     "history": "LAMA_OLE_FORMAT_HISTORY",
     "replay": "LAMA_OLE_FORMAT_REPLAY",
+    "output": "LAMA_OLE_FORMAT_OUTPUT",
 }
 
 
-def parse_line_formats(view="base"):
+def parse_line_formats(view="history"):
     """Resolve line templates for a view into a :class:`LineFormats` dict.
 
-    The shared ``LAMA_OLE_FORMAT`` variable applies to both /history and
-    session replay; ``LAMA_OLE_FORMAT_HISTORY`` and ``LAMA_OLE_FORMAT_REPLAY``
-    override it per view (``view`` is ``"history"`` or ``"replay"``; the
-    default ``"base"`` reads only the shared variable). Overrides merge per
-    entry type (and per role name), so a view var only changes the types and
-    names it mentions. Unset types keep the built-in default
-    ``[{num}] {ts}{role}: {text}``; ``tool_result`` stays hidden (empty
-    template) unless a var names it.
+    Each view reads only its own environment variable:
+    ``LAMA_OLE_FORMAT_HISTORY``, ``LAMA_OLE_FORMAT_REPLAY`` or
+    ``LAMA_OLE_FORMAT_OUTPUT``. Overrides merge per entry type (and per role
+    name), so a view var only changes the types and names it mentions. Unset
+    types keep the built-in default ``[{num}] {ts}{role}: {text}``;
+    ``tool_result`` stays hidden (empty template) unless a var names it.
     """
     formats = LineFormats(_DEFAULT_FORMATS)
-    _apply_format_spec(formats, os.environ.get(_VIEW_ENV["base"]))
-    if view != "base":
-        varname = _VIEW_ENV.get(view)
-        if varname:
-            _apply_format_spec(formats, os.environ.get(varname))
+    varname = _VIEW_ENV.get(view)
+    if varname:
+        _apply_format_spec(formats, os.environ.get(varname))
+    return formats
+
+
+def parse_output_format():
+    """Resolve the live chat output template.
+
+    The live assistant stream keeps its current raw-text behavior unless
+    ``LAMA_OLE_FORMAT_OUTPUT`` is set. The same template tokens are available
+    as the history/replay views, but the default is the plain streamed text
+    rather than a numbered listing.
+    """
+    formats = LineFormats({"output": _DEFAULT_OUTPUT_TEMPLATE})
+    _apply_format_spec(formats, os.environ.get(_VIEW_ENV["output"]))
     return formats
 
 
@@ -399,6 +409,54 @@ def _type_color(etype):
     return color_util.C_OUTPUT
 
 
+def _split_text_template(template):
+    marker = "{text}"
+    idx = template.find(marker)
+    if idx < 0:
+        return template, ""
+    return template[:idx], template[idx + len(marker):]
+
+
+def format_output_entry(entry, use_color=True, formats=None):
+    """Render the live assistant output line prefix/suffix for chat mode.
+
+    Returns a ``(prefix, suffix)`` tuple. The prefix is printed before the
+    first streamed content chunk and the suffix after the stream ends. When
+    the template is just ``{text}`` the helper returns an empty prefix and
+    suffix, preserving the current raw-output behavior.
+    """
+    if formats is None:
+        formats = parse_output_format()
+    template = formats.get("output", _DEFAULT_OUTPUT_TEMPLATE)
+    if not template:
+        return None
+
+    msg = entry["msg"]
+    role = msg.get("role")
+    content = msg.get("content", "")
+    names = getattr(formats, "names", _DEFAULT_NAMES)
+    etype = entry.get("type") or "output"
+    role_token = names.get(role, etype)
+    num = str(entry["num"])
+    ts = f"[{msg['timestamp']}] " if msg.get("timestamp") else ""
+    tokens = {
+        "num": num,
+        "ts": ts,
+        "role": role_token,
+        "text": _text(content),
+        "tool": "",
+        "args": "",
+    }
+    prefix_template, suffix_template = _split_text_template(template)
+    prefix = _render_template(prefix_template, tokens)
+    suffix = _render_template(suffix_template, tokens) if suffix_template else ""
+    color = _type_color("output")
+    return (
+        color_util.colored(prefix, color, use_color),
+        color_util.colored(suffix, color, use_color),
+    )
+
+
 def format_list_entry(entry, use_color=True, formats=None):
     """Render one history entry as a line (used by /history and replay).
 
@@ -406,7 +464,7 @@ def format_list_entry(entry, use_color=True, formats=None):
     :func:`parse_line_formats`); an empty template returns ``None`` (hidden).
     Tokens: ``{num}``, ``{ts}``, ``{role}``, ``{text}``, ``{tool}``,
     ``{args}``. The whole line is colored by entry type when ``use_color`` is
-    set. ``formats`` defaults to the resolved shared + view configuration.
+    set. ``formats`` defaults to the resolved per-view configuration.
     """
     if formats is None:
         formats = parse_line_formats()

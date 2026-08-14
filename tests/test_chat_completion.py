@@ -100,12 +100,15 @@ class TestFilePathCompletion:
         assert chat._completion_candidates("/feed sub") == ["subdir/"]
         assert chat._completion_candidates("/feed subdir/") == ["subdir/inner.txt"]
 
-    def test_skill_load_completes_file(self, tmp_path, monkeypatch):
+    def test_skill_load_ignores_cwd_files(self, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
         _write_text(str(tmp_path / "code.md"), "skill")
+        skills_dir = tmp_path / "skills"
+        skills_dir.mkdir()
+        _write_text(str(skills_dir / "code-reviewer.md"), "skill")
         matches = chat._completion_candidates("/skill load co")
-        assert "code.md" in matches
         assert "code-reviewer" in matches
+        assert "code.md" not in matches
 
     def test_systemprompt_completes_file(self, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
@@ -243,16 +246,16 @@ class TestDottedToolsetCompletion:
         )
         assert matches == ["tools.security.crypto_tool"]
 
-    def test_sibling_package_lists_only_tool_modules(self, tmp_path):
+    def test_out_of_tree_package_not_offered(self, tmp_path):
         tools_dir = self._tree(tmp_path)
         matches = chat._completion_candidates("/tools load mycompany.", tools_dir, [])
-        assert matches == ["mycompany.db_tools"]
+        assert matches == []
 
-    def test_sibling_package_prefix(self, tmp_path):
+    def test_out_of_tree_package_prefix(self, tmp_path):
         tools_dir = self._tree(tmp_path)
         assert (
             chat._completion_candidates("/tools load mycompany.db", tools_dir, [])
-            == ["mycompany.db_tools"]
+            == []
         )
 
     def test_non_tool_module_not_offered(self, tmp_path):
@@ -283,7 +286,7 @@ class TestDottedToolsetCompletion:
 
     def test_loaded_toolset_completion_full_name_for_nested(self, tmp_path):
         tools_dir = self._tree(tmp_path)
-        loaded = ["tools.web_tools", "tools.security.crypto_tool", "mycompany.db_tools"]
+        loaded = ["tools.web_tools", "tools.security.crypto_tool"]
         assert (
             chat._completion_candidates(
                 "/tools unload crypto", tools_dir, loaded
@@ -456,13 +459,15 @@ class TestSkillNameCompletion:
         assert "code-reviewer" in matches
         assert "german-assistant" in matches
 
-    def test_skill_load_merges_names_and_paths(self, tmp_path, monkeypatch):
+    def test_skill_load_keeps_completion_scoped_to_skills_dir(
+        self, tmp_path, monkeypatch
+    ):
         monkeypatch.chdir(tmp_path)
         _write_text(str(tmp_path / "code.md"), "skill")
         skills_dir = self._skills_dir(tmp_path)
         matches = chat._completion_candidates("/skill load co", skills_dir=skills_dir)
         assert "code-reviewer" in matches
-        assert "code.md" in matches
+        assert "code.md" not in matches
 
     def test_skill_load_defaults_to_repo_skills_dir(self, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
@@ -477,25 +482,31 @@ class TestSkillNameCompletion:
             == ["code-reviewer "]
         )
 
-    def test_skill_load_path_style_lists_only_skill_files(self, tmp_path, monkeypatch):
+    def test_skill_load_completes_path_style_inputs(
+        self, tmp_path, monkeypatch
+    ):
         monkeypatch.chdir(tmp_path)
-        sub = tmp_path / "subdir"
+        skills_dir = self._skills_dir(tmp_path)
+        sub = tmp_path / "skills" / "subdir"
         sub.mkdir()
         _write_text(str(sub / "web.md"), "skill")
         _write_text(str(sub / "audio.txt"), "skill")
         _write_text(str(sub / "notes.json"), "not a skill")
-        matches = chat._completion_candidates("/skill load subdir/")
+        matches = chat._completion_candidates("/skill load subdir/", skills_dir=skills_dir)
         assert "subdir/web.md" in matches
         assert "subdir/audio.txt" in matches
         assert "subdir/notes.json" not in matches
 
-    def test_skill_load_path_style_descends_into_nested_dir(self, tmp_path, monkeypatch):
+    def test_skill_load_descends_into_nested_dirs(
+        self, tmp_path, monkeypatch
+    ):
         monkeypatch.chdir(tmp_path)
-        nested = tmp_path / "a" / "b"
+        skills_dir = self._skills_dir(tmp_path)
+        nested = tmp_path / "skills" / "a" / "b"
         nested.mkdir(parents=True)
         _write_text(str(nested / "deep.md"), "skill")
-        assert "a/b/" in chat._completion_candidates("/skill load a/")
-        assert "a/b/deep.md" in chat._completion_candidates("/skill load a/b/")
+        assert "a/b/" in chat._completion_candidates("/skill load a/", skills_dir=skills_dir)
+        assert "a/b/deep.md" in chat._completion_candidates("/skill load a/b/", skills_dir=skills_dir)
 
     def test_skill_load_top_level_stems_restricted_to_skill_files(
         self, tmp_path, monkeypatch
@@ -511,28 +522,17 @@ class TestSkillNameCompletion:
         assert "code-reviewer" in matches
         assert "notes" not in matches
 
-    def test_skill_load_dotted_no_descent(self, tmp_path, monkeypatch):
+    def test_skill_load_dotted_no_completion(self, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
         sub = tmp_path / "subdir"
         sub.mkdir()
         _write_text(str(sub / "web.md"), "skill")
         assert chat._completion_candidates("/skill load subdir.web") == []
 
-    def test_skill_load_dotted_filename_completes_as_path(self, tmp_path, monkeypatch):
+    def test_skill_load_dotted_filename_no_completion(self, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
         _write_text(str(tmp_path / "subdir.web.md"), "skill")
-        matches = chat._completion_candidates("/skill load subdir.web")
-        assert "subdir.web.md" in matches
-
-    def test_skill_load_dir_match_gets_no_trailing_space(self, tmp_path, monkeypatch):
-        monkeypatch.chdir(tmp_path)
-        os.mkdir(str(tmp_path / "subdir"))
-        matches = chat._completion_candidates("/skill load sub")
-        assert "subdir/" in matches
-        assert (
-            chat._maybe_append_completion_space("/skill load sub", ["subdir/"])
-            == ["subdir/"]
-        )
+        assert chat._completion_candidates("/skill load subdir.web") == []
 
 
 class TestSessionsRmCompletion:

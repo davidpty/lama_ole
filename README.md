@@ -540,10 +540,10 @@ and `/load`.
 * **Auto-resume**: starting `--chat` restores the most recent session for the
   current directory and prints a notice. The restored conversation is then
   replayed as a numbered listing that looks exactly like `/history` — the same
-  `[N] [ts]` prefixes, role labels and colors (the two views share the
-  `LAMA_OLE_FORMAT` line templates; see "History and cutting"). If the
-  session model differs from the CLI `-m`, you are asked which to keep
-  (session / CLI / abort).
+  `[N] [ts]` prefixes, role labels and colors (the views use the per-view
+  format templates described in "History and cutting"). If the session model
+  differs from the CLI `-m`, you are asked which to keep (session / CLI /
+  abort).
   `/resume` and `/load` replay the history the same way.
 * **Opt out**: the two behaviors are independent toggles, both on by default:
   * `--no-resume` (or `LAMA_OLE_RESUME=false`) disables auto-loading.
@@ -591,10 +591,10 @@ A resumed session is replayed as a numbered listing that looks exactly like
 How lines are rendered is driven by **line templates** set through environment
 variables:
 
-- `LAMA_OLE_FORMAT` — the shared base, applied to both `/history` and session
-  replay.
-- `LAMA_OLE_FORMAT_HISTORY` and `LAMA_OLE_FORMAT_REPLAY` — per-view overrides
-  that only change the entry types they name.
+- `LAMA_OLE_FORMAT_HISTORY` — the `/history` view.
+- `LAMA_OLE_FORMAT_REPLAY` — session replay.
+- `LAMA_OLE_FORMAT_OUTPUT` — the live `--chat` assistant stream. It defaults
+  to raw streamed text, so leaving it unset preserves the current chat output.
 
 Each entry type has one template. A value is either a bare template applied to
 every visible type, or semicolon-separated `type=template` pairs. Types may be
@@ -620,16 +620,17 @@ default and prints a warning once. Colors are applied per entry type whenever
 color mode is on; there is no per-line color setting. Examples:
 
 ```sh
-LAMA_OLE_FORMAT="[{num}] {ts}{role}: {text}"            # built-in default
-LAMA_OLE_FORMAT="user={num} You: {text};assistant={num} Bot: {text}"
-LAMA_OLE_FORMAT="name.user=You;name.assistant=Bot"       # custom names, default templates
-LAMA_OLE_FORMAT_HISTORY="user="                          # hide user lines in /history only
-LAMA_OLE_FORMAT="tool_result=[{num}] {tool} => {text}"   # always show tool responses
+LAMA_OLE_FORMAT_HISTORY="[{num}] {ts}{role}: {text}"     # built-in /history default
+LAMA_OLE_FORMAT_REPLAY="user={num} You: {text};assistant={num} Bot: {text}"
+LAMA_OLE_FORMAT_OUTPUT="{text}"                          # raw live chat output (default)
+LAMA_OLE_FORMAT_OUTPUT="[{num}] {role}: {text}"          # format live chat output
 ```
 
 `/history -t` forces tool results on for one listing: a hidden `tool_result`
-template is replaced by the effective bare template (so `-t` lines stay in the
-same style as the rest), or by the default template when no bare value is set.
+template is replaced by the default template when no explicit `tool_result`
+value is set.
+The live chat stream has its own `LAMA_OLE_FORMAT_OUTPUT` template; it is
+independent from the `/history` and replay views.
 
 #### `/history`
 
@@ -641,7 +642,8 @@ Every entry is prefixed with the time the event happened, e.g.
 `[7] [2026-08-09 09:01:00] USER: ...`. Tool calls show the concrete function
 name and arguments (`TOOL: [data from read_file: path='lama_ole/AGENTS.md']`),
 not just an empty `ASSISTANT (TOOLCALL)` marker; the full tool response data
-still requires `-t` (or a `tool_result` line template in `LAMA_OLE_FORMAT*`).
+still requires `-t` (or a `tool_result` line template in
+`LAMA_OLE_FORMAT_HISTORY`).
 
 | Command | Shows |
 |---------|-------|
@@ -881,9 +883,9 @@ the configured default.
  | `LAMA_OLE_COLOR_METER_LOW` | color spec | (config-only, no flag) |
  | `LAMA_OLE_COLOR_METER_MID` | color spec | (config-only, no flag) |
  | `LAMA_OLE_COLOR_METER_HIGH` | color spec | (config-only, no flag) |
-  | `LAMA_OLE_FORMAT` | line template | (config-only, no flag) — shared `/history` + replay line templates, incl. `name.<role>=<label>` name overrides (see "History and cutting") |
-  | `LAMA_OLE_FORMAT_HISTORY` | line template | (config-only, no flag) — per-view override for `/history` |
-  | `LAMA_OLE_FORMAT_REPLAY` | line template | (config-only, no flag) — per-view override for session replay |
+| `LAMA_OLE_FORMAT_HISTORY` | line template | (config-only, no flag) — per-view override for `/history` |
+| `LAMA_OLE_FORMAT_REPLAY` | line template | (config-only, no flag) — per-view override for session replay |
+| `LAMA_OLE_FORMAT_OUTPUT` | line template | (config-only, no flag) — per-view override for live `--chat` assistant output |
 
 The `LAMA_OLE_COLOR_*` variables customize the ANSI colors used for the chat
 prompt, your typed input, the thinking stream, the LLM output, and the context

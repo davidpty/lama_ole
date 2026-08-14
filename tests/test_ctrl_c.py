@@ -165,6 +165,27 @@ def test_run_chat_interrupt_during_turn_rolls_back_and_continues(
     assert "outputting" in err
 
 
+def test_run_chat_applies_output_format(monkeypatch, capsys):
+    state = chat.ChatState(
+        client=FakeClient(content="reply"), model="test", color="never"
+    )
+    sequence = ["hello", EOFError()]
+
+    def fake_input(prompt):
+        item = sequence.pop(0)
+        if isinstance(item, Exception):
+            raise item
+        return item
+
+    monkeypatch.setenv("LAMA_OLE_FORMAT_OUTPUT", "[{num}] OUT: {text}")
+    monkeypatch.setattr("builtins.input", fake_input)
+    chat.run_chat(state)
+
+    out = capsys.readouterr().out
+    assert "[2] OUT: reply" in out
+    assert "Chat mode. Type /help for commands." in out
+
+
 def test_main_initial_content_interrupt_falls_back_to_repl(monkeypatch, capsys):
     class FakeRouter:
         def __init__(self, *args, **kwargs):

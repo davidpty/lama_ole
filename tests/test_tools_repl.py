@@ -8,6 +8,7 @@ refresh, and /save-/load persistence.
 
 import os
 import shutil
+import importlib
 import sys
 import tempfile
 import uuid
@@ -49,57 +50,91 @@ def greet(name: str) -> str:
 """
 
 MODULE_BAD = """\
+from tool_base import tool
+
+@tool(description="Broken tool")
+def boom() -> str:
+    return "boom"
+
 raise RuntimeError("boom")
 """
 
 
 @pytest.fixture()
 def fake_tools_dir():
-    """A temp dir on sys.path with two good toolset modules and one that
-    raises on import. Returns the dir path."""
+    """A temp dir on sys.path with a ``tools/`` package tree for tool tests."""
     tmp = tempfile.mkdtemp()
     uid = uuid.uuid4().hex[:8]
+    saved_modules = {
+        name: module
+        for name, module in sys.modules.items()
+        if name == "tools" or name.startswith("tools.")
+    }
+    for name in list(saved_modules):
+        sys.modules.pop(name, None)
+    importlib.invalidate_caches()
     sys.path.insert(0, tmp)
-    with open(os.path.join(tmp, "good_a.py"), "w", encoding="utf-8") as f:
+    tools_dir = os.path.join(tmp, "tools")
+    os.makedirs(tools_dir, exist_ok=True)
+    with open(os.path.join(tools_dir, "__init__.py"), "w", encoding="utf-8") as f:
+        f.write("")
+    with open(os.path.join(tools_dir, "good_a.py"), "w", encoding="utf-8") as f:
         f.write(MODULE_GOOD)
-    with open(os.path.join(tmp, "good_b.py"), "w", encoding="utf-8") as f:
+    with open(os.path.join(tools_dir, "good_b.py"), "w", encoding="utf-8") as f:
         f.write(MODULE_GREET)
-    with open(os.path.join(tmp, f"bad_{uid}.py"), "w", encoding="utf-8") as f:
+    with open(os.path.join(tools_dir, f"bad_{uid}.py"), "w", encoding="utf-8") as f:
         f.write(MODULE_BAD)
-    yield tmp, f"bad_{uid}"
+    yield tools_dir, f"bad_{uid}"
     sys.path.remove(tmp)
+    for name in list(sys.modules):
+        if name == "tools" or name.startswith("tools."):
+            sys.modules.pop(name, None)
+    sys.modules.update(saved_modules)
     shutil.rmtree(tmp, ignore_errors=True)
 
 
 @pytest.fixture()
 def fake_pkg_tools_dir():
-    """A temp dir on sys.path with a sibling package containing tool modules.
+    """A temp dir on sys.path with nested packages inside ``tools/``.
 
-    Each test gets a uniquely named package (uuid) so re-imports never collide
-    in the global module/registry state. Mirrors a top-level package like
-    ``tools_security`` sitting next to the ``tools`` directory: modules are
-    importable via dotted names (``<pkg>.db_tools``, ``<pkg>.sub.deep_tools``).
-    Yields ``(tmp, pkg_name)``.
+    Each test gets a uniquely named package under ``tools/`` so re-imports
+    never collide in the global module/registry state.
+    Yields ``(tmp, module_prefix)`` where ``module_prefix`` is something like
+    ``tools.pkg1234``.
     """
     tmp = tempfile.mkdtemp()
-    pkg = f"mycompany{uuid.uuid4().hex[:8]}"
+    pkg = f"pkg{uuid.uuid4().hex[:8]}"
+    saved_modules = {
+        name: module
+        for name, module in sys.modules.items()
+        if name == "tools" or name.startswith("tools.")
+    }
+    for name in list(saved_modules):
+        sys.modules.pop(name, None)
+    importlib.invalidate_caches()
     sys.path.insert(0, tmp)
-    for rel in (pkg, os.path.join(pkg, "sub")):
+    tools_dir = os.path.join(tmp, "tools")
+    os.makedirs(tools_dir, exist_ok=True)
+    for rel in ("tools", os.path.join("tools", pkg), os.path.join("tools", pkg, "sub")):
         os.makedirs(os.path.join(tmp, rel), exist_ok=True)
         with open(os.path.join(tmp, rel, "__init__.py"), "w", encoding="utf-8") as f:
             f.write("")
     with open(
-        os.path.join(tmp, pkg, "db_tools.py"), "w", encoding="utf-8"
+        os.path.join(tmp, "tools", pkg, "db_tools.py"), "w", encoding="utf-8"
     ) as f:
         f.write(MODULE_GOOD)
     with open(
-        os.path.join(tmp, pkg, "sub", "deep_tools.py"),
+        os.path.join(tmp, "tools", pkg, "sub", "deep_tools.py"),
         "w",
         encoding="utf-8",
     ) as f:
         f.write(MODULE_GREET)
-    yield tmp, pkg
+    yield tmp, f"tools.{pkg}"
     sys.path.remove(tmp)
+    for name in list(sys.modules):
+        if name == "tools" or name.startswith("tools."):
+            sys.modules.pop(name, None)
+    sys.modules.update(saved_modules)
     shutil.rmtree(tmp, ignore_errors=True)
 
 
@@ -129,37 +164,49 @@ def test_get_available_toolsets_missing_dir():
 
 def test_load_tools_idempotent(fake_tools_dir):
     tmp, _ = fake_tools_dir
-    load_tools("good_a")
-    load_tools("good_a")
-    matches = [m for m in get_tool_modules_info() if m.module_name == "good_a"]
+    load_tools("tools.good_a")
+    load_tools("tools.good_a")
+    matches = [m for m in get_tool_modules_info() if m.module_name == "tools.good_a"]
     assert len(matches) == 1
 
 
 def test_get_tools_of_module(fake_tools_dir):
     tmp, _ = fake_tools_dir
-    load_tools("good_a")
-    names = sorted(t.name for t in get_tools_of_module("good_a"))
+    load_tools("tools.good_a")
+    names = sorted(t.name for t in get_tools_of_module("tools.good_a"))
     assert names == ["add", "mul"]
     assert get_tools_of_module("never_loaded_xyz") == []
 
 
 def test_peek_tools_of_module_not_registered(fake_tools_dir):
     tmp, _ = fake_tools_dir
-    tools = peek_tools_of_module("good_b")
+    tools = peek_tools_of_module("tools.good_b")
     assert sorted(t.name for t in tools) == ["greet"]
-    matches = [m for m in get_tool_modules_info() if m.module_name == "good_b"]
+    matches = [m for m in get_tool_modules_info() if m.module_name == "tools.good_b"]
     assert matches == []
 
 
-def test_resolve_toolset_module():
-    assert chat._resolve_toolset_module("example_tools") == "tools.example_tools"
-    assert chat._resolve_toolset_module("tools.example_tools") == "tools.example_tools"
-    assert chat._resolve_toolset_module("no_such_module_zzz") == "tools.no_such_module_zzz"
+def test_resolve_toolset_module(fake_tools_dir):
+    tools_dir, _ = fake_tools_dir
+    assert chat._resolve_toolset_module("good_a", tools_dir) == "tools.good_a"
+    assert (
+        chat._resolve_toolset_module("tools.good_a", tools_dir)
+        == "tools.good_a"
+    )
+    assert chat._resolve_toolset_module("no_such_module_zzz", tools_dir) is None
 
 
-def test_resolve_toolset_module_bare_fallback(fake_tools_dir):
-    tmp, _ = fake_tools_dir
-    assert chat._resolve_toolset_module("good_a") == "good_a"
+def test_resolve_toolset_module_rejects_out_of_tree(fake_pkg_tools_dir):
+    tmp, _module_prefix = fake_pkg_tools_dir
+    tools_dir = os.path.join(tmp, "tools")
+    out_of_tree = f"mycompany{uuid.uuid4().hex[:8]}"
+    out_dir = os.path.join(tmp, out_of_tree)
+    os.makedirs(out_dir, exist_ok=True)
+    with open(os.path.join(out_dir, "__init__.py"), "w", encoding="utf-8") as f:
+        f.write("")
+    with open(os.path.join(out_dir, "db_tools.py"), "w", encoding="utf-8") as f:
+        f.write(MODULE_GOOD)
+    assert chat._resolve_toolset_module(f"{out_of_tree}.db_tools", tools_dir) is None
 
 
 # --- REPL commands ----------------------------------------------------------
@@ -188,7 +235,7 @@ def test_tools_load_refreshes_ollama(fake_tools_dir, capsys):
     state = make_state(tmp)
     chat._cmd_tools("load good_a good_b", state)
     capsys.readouterr()
-    assert state.loaded_tool_modules == ["good_a", "good_b"]
+    assert state.loaded_tool_modules == ["tools.good_a", "tools.good_b"]
     assert sorted(t.name for t in state.loaded_tools) == ["add", "greet", "mul"]
     assert state.ollama_tools is not None
     assert len(state.ollama_tools) == 3
@@ -202,7 +249,7 @@ def test_tools_load_duplicate_rejected(fake_tools_dir, capsys):
     chat._cmd_tools("load good_a", state)
     out = capsys.readouterr().out
     assert "already loaded" in out
-    assert state.loaded_tool_modules == ["good_a"]
+    assert state.loaded_tool_modules == ["tools.good_a"]
     assert len(state.loaded_tools) == 2
 
 
@@ -214,7 +261,7 @@ def test_tools_load_unknown_rejected(fake_tools_dir, capsys):
     chat._cmd_tools("load unknown_toolset_zzz", state)
     out = capsys.readouterr().out
     assert "unknown toolset" in out
-    assert state.loaded_tool_modules == ["good_a"]
+    assert state.loaded_tool_modules == ["tools.good_a"]
     assert len(state.loaded_tools) == 2
 
 
@@ -229,7 +276,7 @@ def test_tools_load_import_error_rolls_back(fake_tools_dir, capsys):
     assert state.ollama_tools is None
 
 
-def test_tools_load_dotted_sibling_package(fake_pkg_tools_dir, capsys):
+def test_tools_load_dotted_nested_package(fake_pkg_tools_dir, capsys):
     tmp, pkg = fake_pkg_tools_dir
     state = make_state(tmp)
     chat._cmd_tools(f"load {pkg}.db_tools", state)
@@ -251,11 +298,6 @@ def test_tools_load_dotted_nested_subpackage(fake_pkg_tools_dir, capsys):
     assert len(state.ollama_tools) == 1
 
 
-def test_resolve_toolset_module_dotted_fallback(fake_pkg_tools_dir):
-    tmp, pkg = fake_pkg_tools_dir
-    assert chat._resolve_toolset_module(f"{pkg}.db_tools") == f"{pkg}.db_tools"
-
-
 def test_tools_load_dotted_unknown_rolls_back(fake_pkg_tools_dir, capsys):
     tmp, pkg = fake_pkg_tools_dir
     state = make_state(tmp)
@@ -263,7 +305,7 @@ def test_tools_load_dotted_unknown_rolls_back(fake_pkg_tools_dir, capsys):
     capsys.readouterr()
     chat._cmd_tools(f"load {pkg}.no_such_module", state)
     out = capsys.readouterr().out
-    assert "Error loading toolset" in out
+    assert "unknown toolset" in out
     assert state.loaded_tool_modules == [f"{pkg}.db_tools"]
     assert len(state.loaded_tools) == 2
 
@@ -288,7 +330,7 @@ def test_tools_unload(fake_tools_dir, capsys):
     chat._cmd_tools("unload good_a", state)
     out = capsys.readouterr().out
     assert "Unloaded toolset(s): good_a" in out
-    assert state.loaded_tool_modules == ["good_b"]
+    assert state.loaded_tool_modules == ["tools.good_b"]
     assert sorted(t.name for t in state.loaded_tools) == ["greet"]
     assert len(state.ollama_tools) == 1
 
@@ -301,7 +343,7 @@ def test_tools_unload_not_loaded(fake_tools_dir, capsys):
     chat._cmd_tools("unload good_b", state)
     out = capsys.readouterr().out
     assert "is not loaded" in out
-    assert state.loaded_tool_modules == ["good_a"]
+    assert state.loaded_tool_modules == ["tools.good_a"]
     assert len(state.loaded_tools) == 2
 
 
@@ -370,7 +412,7 @@ def test_save_load_persistence(fake_tools_dir, capsys):
 
     fresh = make_state(tmp)
     chat._cmd_load(save_path, fresh)
-    assert fresh.loaded_tool_modules == ["good_a"]
+    assert fresh.loaded_tool_modules == ["tools.good_a"]
     assert sorted(t.name for t in fresh.loaded_tools) == ["add", "mul"]
     assert len(fresh.ollama_tools) == 2
 
